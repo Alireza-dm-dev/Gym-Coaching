@@ -14,8 +14,10 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const managedLinux = readExecutionProfile() === "managed-linux";
 
 const localBindingConfig = {
-  main: "vinext/server/fetch-handler",
+  main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
+  // Daily Session-detail retention: 21:00 UTC is ~00:30 Asia/Tehran (UTC+03:30).
+  triggers: { crons: ["0 21 * * *"] },
   d1_databases: d1
     ? [
         {

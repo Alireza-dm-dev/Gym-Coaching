@@ -1,5 +1,5 @@
-import CoachApp from "./coach-app";
+import AuthGate from "./auth-gate";
 
 export default function Home() {
-  return <CoachApp />;
+  return <AuthGate />;
 }
