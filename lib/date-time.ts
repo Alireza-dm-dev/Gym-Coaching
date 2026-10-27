@@ -339,3 +339,55 @@ export function getNextAppDates(
 
   return dates;
 }
+
+/** One real Jalali (Solar Hijri) month laid out for a Saturday-first calendar grid. */
+export type JalaliMonthGrid = {
+  year: number;
+  month: number;
+  monthName: string;
+  /** Gregorian `YYYY-MM-DD` of Jalali day 1 and of the real last day. */
+  startDateKey: string;
+  endDateKey: string;
+  /** Empty cells before day 1 in a Saturday-first week (0-6). */
+  leadingBlanks: number;
+  days: { dateKey: string; jalaliDay: number; weekday: WeekdayCode }[];
+};
+
+/**
+ * The Jalali month containing `dateKey`, with its real length (29-31 days,
+ * leap years included) taken from `Intl`'s Persian calendar rather than a
+ * hand-kept table. Every day carries its Gregorian `dateKey`, the bridge to
+ * persistence, so nothing here depends on the host timezone.
+ */
+export function getJalaliMonthGrid(dateKey: string): JalaliMonthGrid {
+  const noon = (key: string) => new Date(localDateTimeToUtcIso(key, "12:00"));
+  const probe = getJalaliDateParts(noon(dateKey));
+  const startDateKey = addDaysToDateKey(dateKey, -(probe.day - 1));
+
+  const days: JalaliMonthGrid["days"] = [];
+  for (let offset = 0; offset < 31; offset++) {
+    const key = addDaysToDateKey(startDateKey, offset);
+    const parts = getJalaliDateParts(noon(key));
+    if (parts.month !== probe.month) break;
+    days.push({ dateKey: key, jalaliDay: parts.day, weekday: parts.weekday });
+  }
+
+  return {
+    year: probe.year,
+    month: probe.month,
+    monthName: probe.monthName,
+    startDateKey,
+    endDateKey: days[days.length - 1].dateKey,
+    leadingBlanks: ORDERED_WEEKDAYS.indexOf(days[0].weekday),
+    days,
+  };
+}
+
+/** Gregorian `dateKey` of Jalali day 1 of the month `delta` months after (or before) `dateKey`'s month. */
+export function shiftJalaliMonth(dateKey: string, delta: number): string {
+  let grid = getJalaliMonthGrid(dateKey);
+  for (let step = 0; step < Math.abs(delta); step++) {
+    grid = getJalaliMonthGrid(addDaysToDateKey(delta > 0 ? grid.endDateKey : grid.startDateKey, delta > 0 ? 1 : -1));
+  }
+  return grid.startDateKey;
+}

@@ -16,7 +16,7 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
-import { closeSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -250,4 +250,21 @@ export function installSuiteGuard(name, timeoutMs, emergency) {
   process.on("SIGTERM", () => fire("received SIGTERM", 143));
   process.on("uncaughtException", (error) => fire(`uncaught exception: ${error?.message ?? error}`));
   process.on("unhandledRejection", (error) => fire(`unhandled rejection: ${error?.message ?? error}`));
+}
+
+const CHROMIUM_CANDIDATES = [
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+  "/Applications/Chromium.app/Contents/MacOS/Chromium",
+  "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser",
+];
+
+/** Chromium/Chrome executable for the browser suites: CHROMIUM_PATH, a standard install, or Playwright's own. */
+export function resolveChromium(chromium) {
+  if (process.env.CHROMIUM_PATH) {
+    if (!existsSync(process.env.CHROMIUM_PATH)) throw new Error(`CHROMIUM_PATH does not exist: ${process.env.CHROMIUM_PATH}`);
+    return process.env.CHROMIUM_PATH;
+  }
+  const found = [...CHROMIUM_CANDIDATES, chromium.executablePath()].find((path) => path && existsSync(path));
+  if (!found) throw new Error("No Chromium/Chrome found. Set CHROMIUM_PATH to a Chromium/Chrome executable.");
+  return found;
 }

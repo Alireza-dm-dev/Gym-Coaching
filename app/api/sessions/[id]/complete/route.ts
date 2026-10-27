@@ -1,8 +1,9 @@
-import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { and, eq, isNotNull, lt, sql } from "drizzle-orm";
 import { getDb } from "../../../../../db";
 import { sessions } from "../../../../../db/schema";
+import { getAppDateKey, localDateTimeToUtcIso } from "../../../../../lib/date-time";
 import { badRequest, notFound, serverError } from "../../../members/shared";
-import { currentCoachSessionScope, resolveSessionActor, sessionColumns } from "../../shared";
+import { currentCoachSessionScope, nextDateKey, resolveSessionActor, sessionColumns } from "../../shared";
 
 // Session records are persisted state, so never serve them from a cached render.
 export const dynamic = "force-dynamic";
@@ -40,6 +41,9 @@ export async function PATCH(
 
   try {
     const db = getDb();
+    // First instant of Tehran tomorrow: a replacement scheduled at or after it is
+    // still in the future and cannot be completed yet.
+    const tomorrowStart = localDateTimeToUtcIso(nextDateKey(getAppDateKey()), "00:00");
 
     // The write itself is the concurrency guard: only a row that is still
     // `replacement` (with an intact replacementForId) for this coach is
@@ -53,7 +57,8 @@ export async function PATCH(
           eq(sessions.id, id),
           owner,
           eq(sessions.status, "replacement"),
-          isNotNull(sessions.replacementForId)
+          isNotNull(sessions.replacementForId),
+          lt(sessions.scheduledAt, tomorrowStart)
         )
       )
       .returning(sessionColumns);
@@ -64,12 +69,15 @@ export async function PATCH(
     // status condition) only to pick the right error, never to loosen the
     // write's own guard.
     const [existing] = await db
-      .select({ id: sessions.id })
+      .select({ id: sessions.id, status: sessions.status, scheduledAt: sessions.scheduledAt })
       .from(sessions)
       .where(and(eq(sessions.id, id), owner))
       .limit(1);
 
     if (!existing) return notFound("Session not found.");
+    if (existing.status === "replacement" && existing.scheduledAt >= tomorrowStart) {
+      return conflict("A future replacement session cannot be completed yet.");
+    }
     return conflict("Only a replacement session can be completed through this endpoint.");
   } catch (error) {
     return serverError(

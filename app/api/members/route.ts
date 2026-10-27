@@ -33,7 +33,9 @@ export async function GET(request: Request) {
 
   try {
     const db = getDb();
-    const base = db.select(memberColumns).from(members);
+    // createdAt is exposed on the roster only: the Coach Calendar needs it so a Member is never
+    // "Not recorded" for days before they existed. Other Member responses are unchanged.
+    const base = db.select({ ...memberColumns, createdAt: members.createdAt }).from(members);
     const rows = await (actor.kind === "coach"
       ? base.where(eq(members.coachId, actor.coachId))
       : base

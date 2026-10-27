@@ -1,7 +1,7 @@
 import { and, desc, eq, gte, lt, ne, sql } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { members, sessions } from "../../../../db/schema";
-import { localDateTimeToUtcIso } from "../../../../lib/date-time";
+import { getAppDateKey, localDateTimeToUtcIso } from "../../../../lib/date-time";
 import { badRequest, notFound, serverError } from "../../members/shared";
 import { isValidDateKey, nextDateKey, resolveSessionActor, sessionColumns, TIME_PATTERN } from "../shared";
 
@@ -51,7 +51,11 @@ function validateAbsenceInput(body: unknown): { error: string } | { value: Absen
   if (typeof replacementTime !== "string" || !TIME_PATTERN.test(replacementTime)) {
     return { error: "replacementTime must be a 24-hour HH:MM value." };
   }
-  // YYYY-MM-DD keys compare correctly as plain strings.
+  // YYYY-MM-DD keys compare correctly as plain strings. The original absence is
+  // attendance, so it cannot be in the future (Tehran date); the replacement may be.
+  if (dateKey > getAppDateKey()) {
+    return { error: "dateKey cannot be in the future." };
+  }
   if (replacementDateKey < dateKey) {
     return { error: "replacementDateKey cannot be before dateKey." };
   }

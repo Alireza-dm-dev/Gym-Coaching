@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, gte, lt, ne, type SQL } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { members, sessionNotes, sessions } from "../../../db/schema";
-import { localDateTimeToUtcIso } from "../../../lib/date-time";
+import { getAppDateKey, localDateTimeToUtcIso } from "../../../lib/date-time";
 import { badRequest, notFound, serverError } from "../members/shared";
 import { currentCoachSessionScope, resolveSessionActor } from "./shared";
 
@@ -66,6 +66,11 @@ function validateNewSession(body: unknown): { error: string } | { value: Session
   }
   if (typeof dateKey !== "string" || !isValidDateKey(dateKey)) {
     return { error: "dateKey must be a real Gregorian date in YYYY-MM-DD format." };
+  }
+  // Attendance can only be recorded for today or the past, judged by the Tehran
+  // business date (never client time). YYYY-MM-DD keys compare as plain strings.
+  if (dateKey > getAppDateKey()) {
+    return { error: "dateKey cannot be in the future." };
   }
 
   return { value: { memberId, dateKey } };

@@ -17,7 +17,7 @@ import { existsSync } from "node:fs";
 import { chromium } from "playwright-core";
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
-import { count, fetchBounded, installSuiteGuard, sql, startWorker } from "./test-helpers.mjs";
+import { count, fetchBounded, installSuiteGuard, resolveChromium, sql, startWorker } from "./test-helpers.mjs";
 
 const PORT = process.env.ADMIN_UI_TEST_PORT ?? "8797";
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -30,21 +30,7 @@ const BASELINE = { users: 6, activeUsers: 6, coaches: 1, members: 4, member_cycl
 if (process.argv.includes("--remote")) throw new Error("test-admin-ui is local-only.");
 if (!existsSync("dist/server/wrangler.json")) throw new Error("Run the build first (dist/server is missing).");
 
-const CHROMIUM_CANDIDATES = [
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-  "/Applications/Chromium.app/Contents/MacOS/Chromium",
-  "/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/usr/bin/chromium", "/usr/bin/chromium-browser",
-];
-function resolveChromium() {
-  if (process.env.CHROMIUM_PATH) {
-    if (!existsSync(process.env.CHROMIUM_PATH)) throw new Error(`CHROMIUM_PATH does not exist: ${process.env.CHROMIUM_PATH}`);
-    return process.env.CHROMIUM_PATH;
-  }
-  const found = [...CHROMIUM_CANDIDATES, chromium.executablePath()].find((path) => path && existsSync(path));
-  if (!found) throw new Error("No Chromium/Chrome found. Set CHROMIUM_PATH to a Chromium/Chrome executable.");
-  return found;
-}
-const CHROMIUM = resolveChromium();
+const CHROMIUM = resolveChromium(chromium);
 
 const baselineCounts = () => ({ users: count("users"), activeUsers: count("users", "is_active = 1"), coaches: count("coaches"), members: count("members"),
   member_cycles: count("member_cycles"), sessions: count("sessions"), session_notes: count("session_notes"), session_muscles: count("session_muscles"), auth_sessions: count("auth_sessions") });

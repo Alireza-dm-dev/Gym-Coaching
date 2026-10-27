@@ -17,9 +17,12 @@
     "test:admin-members": "node scripts/test-admin-members.mjs",
     "test:admin-credentials": "node scripts/test-admin-credentials.mjs",
     "test:admin-ui": "node scripts/test-admin-ui.mjs",
+    "test:coach-calendar": "node scripts/test-coach-calendar.mjs",
+    "test:coach-calendar-ui": "node scripts/test-coach-calendar-ui.mjs",
     "test:session-reassignment": "node scripts/test-session-reassignment.mjs",
-    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:session-reassignment && npm run test:admin-members && npm run test:admin-credentials",
-    "test:full": "npm run test:regression && npm run test:admin-ui"
+    "test:session-dates": "node scripts/test-session-dates.mjs",
+    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:session-reassignment && npm run test:session-dates && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar",
+    "test:full": "npm run test:regression && npm run test:admin-ui && npm run test:coach-calendar-ui"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
