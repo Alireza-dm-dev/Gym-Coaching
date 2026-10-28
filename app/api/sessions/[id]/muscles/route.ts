@@ -3,17 +3,10 @@ import { getDb } from "../../../../../db";
 import { muscleKeys, sessionMuscles, type MuscleKeyValue } from "../../../../../db/schema";
 import { badRequest, notFound, serverError } from "../../../members/shared";
 import { isSessionDetailExpired } from "../../../../../lib/session-retention";
-import { canWriteSessionDetail, findAccessibleSession, resolveChildActor } from "../../shared";
+import { canonicalMuscleOrder as canonicalOrder, canWriteSessionDetail, findAccessibleSession, resolveChildActor } from "../../shared";
 
 // Session muscles are persisted state, so never serve them from a cached render.
 export const dynamic = "force-dynamic";
-
-const muscleOrder = new Map<MuscleKeyValue, number>(muscleKeys.map((muscle, index) => [muscle, index]));
-
-/** Deterministic `muscleKeys` order, never insertion order. */
-function canonicalOrder(muscles: MuscleKeyValue[]): MuscleKeyValue[] {
-  return [...muscles].sort((a, b) => muscleOrder.get(a)! - muscleOrder.get(b)!);
-}
 
 function conflict(message: string) {
   return Response.json({ error: message }, { status: 409 });
@@ -78,6 +71,12 @@ export async function GET(
     const session = await findAccessibleSession(actor, id);
 
     if (!session) return notFound("Session not found.");
+
+    // Detail past retention reads as empty immediately, before cron deletes the
+    // rows. Reads never 409 and never delete.
+    if (isSessionDetailExpired(session.scheduledAt)) {
+      return Response.json({ muscles: [] }, { status: 200 });
+    }
 
     const rows = await db
       .select({ muscle: sessionMuscles.muscle })

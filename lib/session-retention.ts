@@ -3,11 +3,13 @@ import type { getDb } from "../db";
 import { sessionMuscles, sessionNotes, sessions } from "../db/schema";
 import { addDaysToDateKey, getAppDateKey, localDateTimeToUtcIso } from "./date-time";
 
+import { SESSION_DETAIL_RETENTION_DAYS } from "./session-detail-window";
+
 /**
  * Per-Session detail (notes, muscles, future child data) is kept this many
  * Tehran calendar days. Core `sessions` rows are never subject to retention.
  */
-export const SESSION_DETAIL_RETENTION_DAYS = 30;
+export { SESSION_DETAIL_RETENTION_DAYS };
 
 export type SessionDetailCutoff = {
   /** Tehran calendar day exactly `SESSION_DETAIL_RETENTION_DAYS` before today. */

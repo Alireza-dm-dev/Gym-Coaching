@@ -1,6 +1,6 @@
 import { and, eq, inArray, type SQL } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { members, sessions } from "../../../db/schema";
+import { members, muscleKeys, sessions, type MuscleKeyValue } from "../../../db/schema";
 import {
   authErrorResponse, requireCoach, requireMember, requireUser,
 } from "../../../lib/authorization";
@@ -149,4 +149,41 @@ export function canWriteSessionDetail(
     return session.coachId === actor.coachId || session.replacementForId !== null;
   }
   return false;
+}
+
+const muscleOrder = new Map<MuscleKeyValue, number>(muscleKeys.map((muscle, index) => [muscle, index]));
+
+/** Deterministic `muscleKeys` order, never insertion order. */
+export function canonicalMuscleOrder(muscles: MuscleKeyValue[]): MuscleKeyValue[] {
+  return [...muscles].sort((a, b) => muscleOrder.get(a)! - muscleOrder.get(b)!);
+}
+
+/**
+ * Attaches `muscles` to already-fetched Session rows from ONE batched
+ * `session_muscles` read (never a lookup per Session, never a join that could
+ * multiply Session rows). Detail past retention is hidden here, at read time,
+ * even if cron has not physically deleted the rows yet: `scheduledAt` is
+ * compared strictly against the cutoff, exactly like `isSessionDetailExpired`.
+ * The joined `note` is detail too, so an expired row reads `note: null` as well.
+ * Nothing is deleted; the physical rows stay until cron removes them.
+ */
+export function attachMuscles<T extends { id: number; scheduledAt: string; note: unknown }>(
+  rows: T[],
+  muscleRows: { sessionId: number; muscle: MuscleKeyValue }[],
+  cutoffIso: string
+): (T & { muscles: MuscleKeyValue[] })[] {
+  const bySession = new Map<number, MuscleKeyValue[]>();
+  for (const { sessionId, muscle } of muscleRows) {
+    const list = bySession.get(sessionId);
+    if (list) list.push(muscle);
+    else bySession.set(sessionId, [muscle]);
+  }
+  return rows.map((row) => {
+    const expired = row.scheduledAt < cutoffIso;
+    return {
+      ...row,
+      note: expired ? null : row.note,
+      muscles: expired ? [] : canonicalMuscleOrder(bySession.get(row.id) ?? []),
+    };
+  });
 }

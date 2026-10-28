@@ -1,9 +1,10 @@
-import { and, asc, desc, eq, gte, lt, ne, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, ne, type SQL } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { members, sessionNotes, sessions } from "../../../db/schema";
+import { members, sessionMuscles, sessionNotes, sessions } from "../../../db/schema";
 import { getAppDateKey, localDateTimeToUtcIso } from "../../../lib/date-time";
 import { badRequest, notFound, serverError } from "../members/shared";
-import { currentCoachSessionScope, resolveSessionActor } from "./shared";
+import { getSessionDetailCutoff } from "../../../lib/session-retention";
+import { attachMuscles, currentCoachSessionScope, resolveSessionActor } from "./shared";
 
 // Session records are persisted state, so never serve them from a cached render.
 export const dynamic = "force-dynamic";
@@ -270,7 +271,27 @@ export async function GET(request: Request) {
         .orderBy(desc(sessions.scheduledAt), desc(sessions.id))
         .limit(parsedLimit);
 
-      return Response.json({ sessions: rows }, { status: 200 });
+      // Muscles: ONE extra read for exactly this Session set (same filter, order
+      // and limit as a subquery, so no bound-parameter list and no per-Session read).
+      const muscleRows = await db
+        .select({ sessionId: sessionMuscles.sessionId, muscle: sessionMuscles.muscle })
+        .from(sessionMuscles)
+        .where(
+          inArray(
+            sessionMuscles.sessionId,
+            db
+              .select({ id: sessions.id })
+              .from(sessions)
+              .where(and(scope, eq(sessions.memberId, memberId!)))
+              .orderBy(desc(sessions.scheduledAt), desc(sessions.id))
+              .limit(parsedLimit)
+          )
+        );
+
+      return Response.json(
+        { sessions: attachMuscles(rows, muscleRows, getSessionDetailCutoff().cutoffIso) },
+        { status: 200 }
+      );
     } catch (error) {
       return serverError(
         "GET /api/sessions (history mode) failed",
@@ -318,7 +339,18 @@ export async function GET(request: Request) {
       .where(and(...conditions))
       .orderBy(asc(sessions.scheduledAt), asc(sessions.id));
 
-    return Response.json({ sessions: rows }, { status: 200 });
+    // Muscles: ONE extra read for the same filtered Session set (see history mode).
+    const muscleRows = await db
+      .select({ sessionId: sessionMuscles.sessionId, muscle: sessionMuscles.muscle })
+      .from(sessionMuscles)
+      .where(
+        inArray(sessionMuscles.sessionId, db.select({ id: sessions.id }).from(sessions).where(and(...conditions)))
+      );
+
+    return Response.json(
+      { sessions: attachMuscles(rows, muscleRows, getSessionDetailCutoff().cutoffIso) },
+      { status: 200 }
+    );
   } catch (error) {
     return serverError("GET /api/sessions failed", error, "Unable to read sessions.");
   }

@@ -18,7 +18,7 @@ import { after, before, describe, it } from "node:test";
 import { chromium } from "playwright-core";
 import { count, fetchBounded, installSuiteGuard, resolveChromium, sql, startWorker } from "./test-helpers.mjs";
 import { shortJalaliLabel } from "../lib/coach-calendar.ts";
-import { getAppDateKey, getJalaliMonthGrid, localDateTimeToUtcIso, shiftJalaliMonth } from "../lib/date-time.ts";
+import { addDaysToDateKey, getAppDateKey, getJalaliMonthGrid, localDateTimeToUtcIso, shiftJalaliMonth } from "../lib/date-time.ts";
 
 const PORT = process.env.COACH_CALENDAR_UI_TEST_PORT ?? "8796";
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -40,7 +40,7 @@ const baselineCounts = () => ({ users: count("users"), activeUsers: count("users
 const q = (v) => (v === null ? "NULL" : typeof v === "number" ? String(v) : `'${String(v).replace(/'/g, "''")}'`);
 
 let server, browser, page, snapshot = null, baselineVerified = false;
-installSuiteGuard("test-coach-calendar-ui", 300_000, () => {
+installSuiteGuard("test-coach-calendar-ui", 600_000, () => {
   try { browser?.process()?.kill("SIGKILL"); } catch { /* gone */ }
   server?.killNow();
   if (baselineVerified) cleanup();
@@ -489,6 +489,257 @@ describe("Coach Calendar UI (real browser)", () => {
     await page.locator('.agenda-row[data-state="replacement-completed"]').waitFor();
     assert.deepEqual(writes(apiSince(mark)).map((r) => `${r.method} ${r.path}`), [`PATCH /api/sessions/${replacementId}/complete`]);
     assert.deepEqual((await rowsOf("Alpha")).map((r) => r.state), ["absent", "replacement-completed"]);
+  });
+
+  // ---- SEC0J2: muscle detail in the completion dialog -------------------------------------------------
+  const muscleWrites = (list) => list.filter((r) => r.method === "PUT" && /\/muscles$/.test(r.path));
+  const sessionWrites = (list) => list.filter((r) => (r.method === "POST" && r.path === "/api/sessions") || (r.method === "PATCH" && /\/complete$/.test(r.path)));
+  const chip = (label) => page.getByRole("dialog").getByRole("button", { name: label, exact: true });
+  const chipsOn = () => page.getByRole("dialog").locator('.muscle-chip[aria-pressed="true"]').allInnerTexts();
+  const fetchJson = (path) => page.evaluate(async (u) => (await fetch(u)).json(), path);
+  const musclesFromApi = async (memberId, sessionDate) => {
+    const rows = (await fetchJson(`/api/sessions?memberId=${memberId}&limit=50`)).sessions;
+    return rows.filter((r) => !sessionDate || r.scheduledAt >= at(sessionDate, "00:00") && r.scheduledAt < at(addDaysToDateKey(sessionDate, 1), "00:00"));
+  };
+  const gotoDate = async (dateKey) => {
+    await sidebar("Calendar"); await loaded(); await monthMode(); await goToday();
+    for (let i = 0; i < 4 && !(await page.locator(`.month-grid [data-date="${dateKey}"]`).count()); i++) await prev();
+    await pick(dateKey);
+  };
+
+  it("muscles: Present with 2 muscles saves canonical slugs after the Session, and they persist across reload (history + range reads)", async () => {
+    const coach = await apiCookie(COACH1, FIXTURES[COACH1]);
+    for (const name of ["MuA", "MuB", "MuC", "MuD"]) {
+      const created = await api(coach, "POST", "/api/members", { name: `${PREFIX} ${name}`, phone: "09120000000", weightKg: 60, heightCm: 170, goal: "fitness", defaultStartTime: "07:00", defaultDurationMinutes: 50, preferredDays: ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"] });
+      assert.equal(created.status, 201);
+      ids[name] = created.json.member.id;
+    }
+    sql(`UPDATE members SET created_at = '2020-01-01 00:00:00' WHERE id IN (${ids.MuA}, ${ids.MuB}, ${ids.MuC}, ${ids.MuD})`);
+    await page.reload(); await todayLoaded();
+
+    await todayRow("MuA").getByRole("button", { name: "Present" }).click();
+    await page.getByRole("dialog").waitFor();
+    assert.equal(await page.getByRole("dialog").locator(".muscle-chip").count(), 9); // the canonical taxonomy
+    await chip("Back").click(); await chip("Chest").click(); // picked out of canonical order
+    assert.deepEqual(await chipsOn(), ["Chest", "Back"]);
+    const mark = net.length;
+    await confirmSession();
+    await page.locator(`.schedule-row[data-member="${PREFIX} MuA"][data-state="completed"]`).waitFor();
+    const calls = apiSince(mark);
+    assert.deepEqual(writes(calls).map((r) => `${r.method} ${r.path}`.replace(/\d+/, "#")), ["POST /api/sessions", "PUT /api/sessions/#/muscles"]);
+    assert.deepEqual(JSON.parse(muscleWrites(calls)[0].body), { muscles: ["chest", "back"] });
+
+    await page.reload(); await todayLoaded();
+    assert.equal(await todayRow("MuA").getAttribute("data-state"), "completed");
+    const [row] = await musclesFromApi(ids.MuA, TODAY);
+    assert.deepEqual(row.muscles, ["chest", "back"]);
+    const month = getJalaliMonthGrid(TODAY);
+    const ranged = (await fetchJson(`/api/sessions?from=${month.startDateKey}&to=${month.endDateKey}`)).sessions.find((r) => r.id === row.id);
+    assert.deepEqual(ranged.muscles, ["chest", "back"]);
+  });
+
+  it("muscles: completing with NO selection sends no muscle PUT and shows no error", async () => {
+    await openToday();
+    await todayRow("MuB").getByRole("button", { name: "Present" }).click();
+    await page.getByRole("dialog").waitFor();
+    const mark = net.length;
+    await confirmSession();
+    await page.locator(`.schedule-row[data-member="${PREFIX} MuB"][data-state="completed"]`).waitFor();
+    assert.deepEqual(writes(apiSince(mark)).map((r) => `${r.method} ${r.path}`), ["POST /api/sessions"]);
+    assert.equal(muscleWrites(apiSince(mark)).length, 0);
+    assert.deepEqual((await musclesFromApi(ids.MuB, TODAY))[0].muscles, []);
+  });
+
+  it("muscles: a failing muscle PUT keeps the Session, keeps the dialog open, and Retry resends ONLY the muscles (no second Session write, no second note)", async () => {
+    await openToday();
+    await todayRow("MuC").getByRole("button", { name: "Present" }).click();
+    await page.getByRole("dialog").waitFor();
+    await page.getByRole("dialog").locator("textarea").fill("tempo work");
+    await chip("Glutes").click(); await chip("Quads").click();
+    let failures = 1;
+    const failing = (url) => /\/api\/sessions\/\d+\/muscles$/.test(url.pathname);
+    await page.route(failing, (route) => (route.request().method() === "PUT" && failures-- > 0 ? route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' }) : route.continue()));
+    const mark = net.length;
+    await page.getByRole("button", { name: "Save & confirm attendance" }).click();
+    await page.getByRole("dialog").getByText("muscle details could not be saved").waitFor();
+    await page.getByRole("dialog").getByText("Retry will save the remaining details only").waitFor();
+    // The Session is persisted and visible behind the dialog; the note is saved and locked.
+    assert.equal(sql(`SELECT count(*) AS n FROM sessions WHERE member_id = ${ids.MuC} AND status = 'completed'`)[0].n, 1);
+    await page.locator(`.schedule-row[data-member="${PREFIX} MuC"][data-state="completed"]`).waitFor();
+    assert.equal(await page.getByRole("dialog").locator("textarea").isDisabled(), true);
+    assert.deepEqual(await chipsOn(), ["Glutes", "Quads"]);
+    assert.equal(await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).count(), 0); // now a Close: attendance is already saved
+    assert.ok((await page.getByRole("dialog").getByRole("button", { name: "Close" }).count()) >= 1);
+
+    await page.getByRole("dialog").getByRole("button", { name: "Retry" }).click();
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await page.unroute(failing);
+    const calls = apiSince(mark);
+    assert.equal(sessionWrites(calls).length, 1, "the Session must not be written twice");
+    assert.equal(calls.filter((r) => r.method === "PUT" && /\/note$/.test(r.path)).length, 1, "the saved note must not be resent");
+    assert.equal(muscleWrites(calls).length, 2); // the failed attempt + the retry
+    assert.equal(sql(`SELECT count(*) AS n FROM sessions WHERE member_id = ${ids.MuC}`)[0].n, 1);
+
+    await page.reload(); await todayLoaded();
+    const [row] = await musclesFromApi(ids.MuC, TODAY);
+    assert.deepEqual(row.muscles, ["glutes", "quads"]);
+    assert.equal(row.note.note, "tempo work");
+  });
+
+  it("muscles: backfill inside the 30-day window offers the picker and saves on the SELECTED date", async () => {
+    const target = addDaysToDateKey(TODAY, -5);
+    await gotoDate(target);
+    await page.locator(`.agenda-row[data-member="${PREFIX} MuA"]`).getByRole("button", { name: "Mark completed" }).click();
+    await page.getByRole("dialog").waitFor();
+    assert.equal(await page.getByRole("dialog").getByText("only editable for 30 days").count(), 0);
+    await chip("Calves").click();
+    const mark = net.length;
+    await confirmSession();
+    await page.locator(`.agenda-row[data-member="${PREFIX} MuA"][data-state="completed"]`).waitFor();
+    assert.deepEqual(JSON.parse(writes(apiSince(mark))[0].body), { memberId: ids.MuA, dateKey: target });
+    assert.deepEqual((await musclesFromApi(ids.MuA, target))[0].muscles, ["calves"]);
+  });
+
+  it("muscles: a completed REPLACEMENT can take muscles in the same dialog (PATCH then PUT, link preserved)", async () => {
+    const coach = await apiCookie(COACH1, FIXTURES[COACH1]);
+    const absentDay = addDaysToDateKey(TODAY, -9), replacementDay = addDaysToDateKey(TODAY, -8);
+    const absence = await api(coach, "POST", "/api/sessions/absence", { memberId: ids.MuD, dateKey: absentDay, replacementDateKey: replacementDay, replacementTime: "16:00" });
+    assert.equal(absence.status, 201);
+    await page.reload(); await todayLoaded(); // written outside the UI, so drop the cached months
+    await gotoDate(replacementDay);
+    await page.locator(`.agenda-row[data-member="${PREFIX} MuD"]`).getByRole("button", { name: "Complete replacement" }).click();
+    await page.getByRole("dialog").waitFor();
+    await chip("Arms").click();
+    const mark = net.length;
+    await confirmSession();
+    await page.locator(`.agenda-row[data-member="${PREFIX} MuD"][data-state="replacement-completed"]`).waitFor();
+    assert.deepEqual(writes(apiSince(mark)).map((r) => r.method), ["PATCH", "PUT"]);
+    const [row] = await musclesFromApi(ids.MuD, replacementDay);
+    assert.deepEqual([row.status, row.replacementForId, row.muscles], ["completed", absence.json.absentSession.id, ["arms"]]);
+  });
+
+  it("muscles: backfill OLDER than the detail window keeps attendance but offers no writable detail and sends no detail request", async () => {
+    const target = addDaysToDateKey(TODAY, -40);
+    await gotoDate(target);
+    await page.locator(`.agenda-row[data-member="${PREFIX} MuA"]`).getByRole("button", { name: "Mark completed" }).click();
+    await page.getByRole("dialog").waitFor();
+    await page.getByRole("dialog").getByText("Session details are only editable for 30 days.").waitFor();
+    assert.equal(await page.getByRole("dialog").locator(".muscle-chip:not([disabled])").count(), 0);
+    assert.equal(await page.getByRole("dialog").locator("textarea").isDisabled(), true);
+    const mark = net.length;
+    await confirmSession();
+    await page.locator(`.agenda-row[data-member="${PREFIX} MuA"][data-state="completed"]`).waitFor();
+    assert.deepEqual(writes(apiSince(mark)).map((r) => `${r.method} ${r.path}`), ["POST /api/sessions"]);
+    assert.equal(sql(`SELECT count(*) AS n FROM sessions WHERE member_id = ${ids.MuA} AND scheduled_at = '${at(target, "07:00")}'`)[0].n, 1);
+  });
+
+  // ---- SEC0J3: real Body Map, muscle history chips and editing -----------------------------------------
+  const fills = () => page.locator(".body-map .muscle").evaluateAll((els) => Object.fromEntries(els.map((e) => [e.getAttribute("aria-label"), e.getAttribute("fill")])));
+  const mapReady = () => page.waitForFunction(() => { const pop = document.querySelector(".muscle-pop"); return !!pop && !/Loading/.test(pop.innerText); });
+  const popup = async (label) => { await page.locator(`.body-map .muscle[aria-label="${label}"]`).first().click({ force: true }); return page.locator(".muscle-pop strong").innerText(); };
+  const GREY = "#cfd3ce", LIME = "#dcff28", GOLD = "#f0cc64";
+  const selectMuA = async () => { await openToday(); await todayRow("MuA").locator("time").click(); await mapReady(); };
+  const chipsOfRow = (id) => page.locator(`.session-note[data-session="${id}"] .muscle-tag`).allInnerTexts();
+
+  it("Body Map (Today) is real: days since each muscle, grey for none, honest copy, and no mock strings remain", async () => {
+    await page.reload(); await todayLoaded();
+    await todayRow("MuA").locator("time").click(); await mapReady();
+    const f = await fills();
+    assert.equal(f.Chest, LIME); assert.equal(f.Back, LIME); // trained today
+    assert.equal(f.Calves, GOLD); // 5 days ago
+    assert.equal(f.Shoulders, GREY); assert.equal(f.Glutes, GREY); // never recorded
+    assert.equal(await popup("Chest"), "Trained today");
+    assert.equal(await popup("Calves"), "5 days ago");
+    assert.equal(await popup("Shoulders"), "No muscle detail recorded in the last 30 days");
+    const text = await page.locator("main.content").innerText();
+    for (const mock of ["Upper body is carrying the load", "72", "Next best focus", "Last 14 days", "Open full body history", "WEEKLY SIGNAL", "Ready for stimulus"]) assert.ok(!text.includes(mock), mock);
+    assert.ok(text.includes("Training focus from session details kept in the last 30 days."));
+    // a Member with no retained detail is all grey with the empty-state copy (never "has not trained")
+    await todayRow("MuB").locator("time").click(); await mapReady();
+    assert.ok(Object.values(await fills()).every((v) => v === GREY));
+    await page.locator(".body-map-empty", { hasText: "No muscle detail recorded in the last 30 days." }).waitFor();
+    assert.equal(await page.getByText("has not trained").count(), 0);
+  });
+
+  it("Client Profile: retained sessions list shows muscle chips, expired backfill is absent, and its Body Map equals Today's", async () => {
+    await selectMuA();
+    const todayFills = await fills();
+    const todaySession = (await musclesFromApi(ids.MuA, TODAY))[0];
+    const fiveAgo = (await musclesFromApi(ids.MuA, addDaysToDateKey(TODAY, -5)))[0];
+    const mark = net.length;
+    await sidebar("Clients");
+    await page.locator(".session-note").first().waitFor();
+    await mapReady();
+    assert.deepEqual(await fills(), todayFills); // one helper, one result
+    assert.equal(await page.locator(".session-note").count(), 2); // today + 5 days ago; the 40-day-old backfill has no retained detail
+    assert.deepEqual(await chipsOfRow(todaySession.id), ["Chest", "Back"]);
+    assert.deepEqual(await chipsOfRow(fiveAgo.id), ["Calves"]);
+    assert.equal(await page.locator(".session-note", { hasText: "Add muscles" }).count(), 0);
+    // no per-Session muscle reads: the history response already carries them
+    assert.equal(apiSince(mark).filter((r) => r.method === "GET" && /\/muscles$/.test(r.path)).length, 0);
+  });
+
+  it("History edit: change the set, Save, and chips + Body Map + reload all follow (one PUT, full replacement)", async () => {
+    const row = (await musclesFromApi(ids.MuA, TODAY))[0];
+    await page.locator(`.session-note[data-session="${row.id}"]`).getByRole("button", { name: "Edit muscles" }).click();
+    await page.getByRole("dialog").waitFor();
+    assert.deepEqual(await chipsOn(), ["Chest", "Back"]); // preselected
+    await chip("Back").click(); await chip("Glutes").click();
+    const mark = net.length;
+    await page.getByRole("button", { name: "Save muscles" }).click();
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await page.waitForFunction((id) => [...document.querySelectorAll(`.session-note[data-session="${id}"] .muscle-tag`)].map((e) => e.textContent).join() === "Chest,Glutes", row.id);
+    const calls = apiSince(mark);
+    assert.deepEqual(writes(calls).map((r) => `${r.method} ${r.path}`), [`PUT /api/sessions/${row.id}/muscles`]);
+    assert.deepEqual(JSON.parse(writes(calls)[0].body), { muscles: ["chest", "glutes"] });
+    await mapReady();
+    const f = await fills();
+    assert.equal(f.Back, GREY); assert.equal(f.Glutes, LIME); assert.equal(f.Chest, LIME);
+
+    await page.reload();
+    await todayLoaded(); await todayRow("MuA").locator("time").click(); await sidebar("Clients"); await mapReady();
+    assert.deepEqual(await chipsOfRow(row.id), ["Chest", "Glutes"]);
+    assert.deepEqual((await musclesFromApi(ids.MuA, TODAY))[0].muscles, ["chest", "glutes"]);
+    assert.equal((await fills()).Glutes, LIME);
+    // the Session itself is unchanged
+    const [after] = sql(`SELECT status, replacement_for_id AS r FROM sessions WHERE id = ${row.id}`);
+    assert.deepEqual([after.status, after.r], ["completed", null]);
+  });
+
+  it("History edit: clearing every chip sends PUT { muscles: [] }, the chips disappear and the Body Map recomputes", async () => {
+    const row = (await musclesFromApi(ids.MuA, addDaysToDateKey(TODAY, -5)))[0];
+    await page.locator(`.session-note[data-session="${row.id}"]`).getByRole("button", { name: "Edit muscles" }).click();
+    await page.getByRole("dialog").waitFor();
+    await chip("Calves").click();
+    assert.deepEqual(await chipsOn(), []);
+    const mark = net.length;
+    await page.getByRole("button", { name: "Save muscles" }).click();
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await page.locator(`.session-note[data-session="${row.id}"]`).getByRole("button", { name: "Add muscles" }).waitFor();
+    assert.deepEqual(JSON.parse(writes(apiSince(mark))[0].body), { muscles: [] });
+    assert.deepEqual(await chipsOfRow(row.id), []);
+    await mapReady();
+    assert.equal((await fills()).Calves, GREY);
+    assert.equal(sql(`SELECT count(*) AS n FROM session_muscles WHERE session_id = ${row.id}`)[0].n, 0);
+  });
+
+  it("History edit: a 403 or 409 from the API is a local message (Coach stays signed in)", async () => {
+    const row = (await musclesFromApi(ids.MuA, TODAY))[0];
+    const failing = (url) => /\/api\/sessions\/\d+\/muscles$/.test(url.pathname);
+    for (const [status, text] of [[403, "You can’t edit muscles on this session."], [409, "These details can no longer be edited."]]) {
+      await page.route(failing, (route) => (route.request().method() === "PUT" ? route.fulfill({ status, contentType: "application/json", body: '{"error":"no"}' }) : route.continue()));
+      await page.locator(`.session-note[data-session="${row.id}"]`).getByRole("button", { name: "Edit muscles" }).click();
+      await page.getByRole("dialog").waitFor();
+      await chip("Core").click();
+      await page.getByRole("button", { name: "Save muscles" }).click();
+      await page.getByRole("dialog").getByText(text).waitFor();
+      await page.keyboard.press("Escape");
+      await page.getByRole("dialog").waitFor({ state: "detached" });
+      await page.unroute(failing);
+      await page.locator(`.session-note[data-session="${row.id}"]`).waitFor(); // after the 409 refetch the list is back
+      assert.ok(await page.locator("aside.sidebar nav").isVisible());
+    }
+    assert.deepEqual((await musclesFromApi(ids.MuA, TODAY))[0].muscles, ["chest", "glutes"]); // nothing changed
   });
 
   it("a Coach with ZERO Members keeps the full shell with proper empty states", async () => {

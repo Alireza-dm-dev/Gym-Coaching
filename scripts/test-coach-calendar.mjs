@@ -10,6 +10,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { attendanceActions, buildDayAttendance, memberStartDateKey, summarizeRows, summarizeToday } from "../lib/coach-calendar.ts";
+import { buildMuscleFreshness, daysBetweenDateKeys, freshnessBucket } from "../lib/muscle-freshness.ts";
+import { SESSION_DETAIL_RETENTION_DAYS, isDateKeyInDetailWindow } from "../lib/session-detail-window.ts";
 import { getJalaliMonthGrid, localDateTimeToUtcIso, shiftJalaliMonth, weekdayCodeForDate } from "../lib/date-time.ts";
 
 const TODAY = "2026-10-27";
@@ -215,5 +217,66 @@ describe("Today summary (SEC0I3)", () => {
   it("Today and Calendar derive the same rows for the same date", () => {
     const m = member(1, ["Tue"]);
     assert.deepEqual(day([m], [], TODAY), buildDayAttendance([m], [], TODAY, TODAY));
+  });
+});
+
+describe("session detail window (SEC0J2)", () => {
+  it("detail is editable through D+30 and not from D+31 (Tehran dates)", () => {
+    assert.equal(SESSION_DETAIL_RETENTION_DAYS, 30);
+    assert.equal(isDateKeyInDetailWindow(TODAY, TODAY), true);
+    assert.equal(isDateKeyInDetailWindow("2026-09-27", TODAY), true); // D+30 == today
+    assert.equal(isDateKeyInDetailWindow("2026-09-26", TODAY), false); // D+31
+  });
+});
+
+describe("muscle freshness (SEC0J3)", () => {
+  const done = (dateKey, time, muscles, status = "completed") => ({ scheduledAt: at(dateKey, time), status, muscles });
+  const days = (result, key) => result[key]?.daysSince ?? null;
+
+  it("every muscle is null (never recorded) without sessions", () => {
+    const result = buildMuscleFreshness([], TODAY);
+    assert.deepEqual(Object.keys(result), ["shoulders", "chest", "arms", "core", "back", "glutes", "quads", "hamstrings", "calves"]);
+    assert.ok(Object.values(result).every((v) => v === null));
+  });
+  it("latest Session wins, different muscles keep different dates", () => {
+    const result = buildMuscleFreshness([done("2026-10-20", "09:00", ["chest", "back"]), done("2026-10-25", "09:00", ["chest"]), done("2026-10-22", "09:00", ["glutes"])], TODAY);
+    assert.deepEqual(result.chest, { lastDateKey: "2026-10-25", daysSince: 2 });
+    assert.deepEqual(result.back, { lastDateKey: "2026-10-20", daysSince: 7 });
+    assert.equal(days(result, "glutes"), 5);
+    assert.equal(result.arms, null);
+  });
+  it("0, 1, 4, 7, 14 and >14 day values and their colour buckets", () => {
+    const sessions = [["shoulders", "2026-10-27"], ["chest", "2026-10-26"], ["arms", "2026-10-23"], ["core", "2026-10-20"], ["back", "2026-10-13"], ["glutes", "2026-10-12"]].map(([m, d]) => done(d, "10:00", [m]));
+    const result = buildMuscleFreshness(sessions, TODAY);
+    assert.deepEqual(["shoulders", "chest", "arms", "core", "back", "glutes"].map((k) => days(result, k)), [0, 1, 4, 7, 14, 15]);
+    assert.deepEqual(["shoulders", "chest", "arms", "core", "back", "glutes"].map((k) => freshnessBucket(days(result, k))), ["l0", "l0", "l1", "l2", "l3", "none"]);
+    assert.deepEqual([3, 6, 10].map(freshnessBucket), ["l1", "l2", "l3"]);
+    assert.equal(freshnessBucket(null), "none");
+  });
+  it("only the 30-day detail window counts: D+30 yes, D+31 no", () => {
+    const result = buildMuscleFreshness([done("2026-09-27", "08:00", ["quads"]), done("2026-09-26", "08:00", ["calves"])], TODAY);
+    assert.equal(days(result, "quads"), 30);
+    assert.equal(result.calves, null);
+  });
+  it("Tehran date, not UTC, decides the day (21:00Z is already tomorrow in Tehran)", () => {
+    const lateUtc = { scheduledAt: "2026-10-25T21:00:00.000Z", status: "completed", muscles: ["core"] };
+    assert.deepEqual(buildMuscleFreshness([lateUtc], TODAY).core, { lastDateKey: "2026-10-26", daysSince: 1 });
+  });
+  it("completed replacements count; empty muscles, absent, pending and future rows do not", () => {
+    const result = buildMuscleFreshness([
+      done("2026-10-24", "09:00", ["hamstrings"]), // a completed replacement looks like any completed row
+      done("2026-10-26", "09:00", []),
+      done("2026-10-26", "09:00", ["arms"], "absent"),
+      done("2026-10-26", "09:00", ["arms"], "replacement"),
+      done("2026-10-28", "09:00", ["arms"]),
+    ], TODAY);
+    assert.equal(days(result, "hamstrings"), 3);
+    assert.equal(result.arms, null);
+  });
+  it("day arithmetic is pure calendar maths across month, leap-day and DST-like boundaries", () => {
+    assert.equal(daysBetweenDateKeys("2026-10-27", "2026-10-27"), 0);
+    assert.equal(daysBetweenDateKeys("2026-03-20", "2026-03-22"), 2);
+    assert.equal(daysBetweenDateKeys("2024-02-28", "2024-03-01"), 2);
+    assert.equal(daysBetweenDateKeys("2025-12-31", "2026-01-02"), 2);
   });
 });

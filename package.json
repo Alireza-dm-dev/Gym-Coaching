@@ -21,7 +21,8 @@
     "test:coach-calendar-ui": "node scripts/test-coach-calendar-ui.mjs",
     "test:session-reassignment": "node scripts/test-session-reassignment.mjs",
     "test:session-dates": "node scripts/test-session-dates.mjs",
-    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:session-reassignment && npm run test:session-dates && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar",
+    "test:session-muscles": "node scripts/test-session-muscles.mjs",
+    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:session-reassignment && npm run test:session-dates && npm run test:session-muscles && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar",
     "test:full": "npm run test:regression && npm run test:admin-ui && npm run test:coach-calendar-ui"
   },
   "dependencies": {

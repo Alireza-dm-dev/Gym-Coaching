@@ -19,6 +19,8 @@ import { Toaster } from "@/components/ui/sonner";
 import { MemberCycleSection } from "./coach-cycle-section";
 import { getAppDateKey, getAppWeek, getJalaliDateParts, getJalaliMonthGrid, shiftJalaliMonth, formatJalaliDate, localDateTimeToUtcIso, getNextAppDates, type WeekdayCode } from "@/lib/date-time";
 import { DISPLAY_LABELS, attendanceActions, buildDayAttendance, shortJalaliLabel, summarizeDates, summarizeToday, type AttendanceAction, type AttendanceRow, type DaySummary, type DisplayState } from "@/lib/coach-calendar";
+import { isDateKeyInDetailWindow } from "@/lib/session-detail-window";
+import { buildMuscleFreshness, freshnessBucket, type MuscleFreshness } from "@/lib/muscle-freshness";
 import { newSessionsStoreValue, useCoachSessionsRanges, type SessionsStore } from "./use-coach-sessions-ranges";
 
 type View = "today" | "clients" | "calendar" | "nutrition" | "settings";
@@ -42,7 +44,7 @@ type MemberProfile = {
  * domain lands; never present these values as stored state.
  */
 type MockMemberOperationalState = {
-  sessionsLeft: number; sessionsTotal: number; muscles: Record<MuscleKey, number>;
+  sessionsLeft: number; sessionsTotal: number;
   periodStart: string; periodEnd: string;
 };
 
@@ -67,6 +69,8 @@ type SessionHistoryItem = {
   status: string;
   replacementForId: number | null;
   note: null | { id: number; note: string; createdAt: string; updatedAt: string };
+  /** Canonical keys in canonical order; empty when none were recorded or detail has expired. */
+  muscles: MuscleKey[];
 };
 
 const labels: Record<MuscleKey, string> = {
@@ -74,25 +78,23 @@ const labels: Record<MuscleKey, string> = {
   back: "Back", glutes: "Glutes", quads: "Quads", hamstrings: "Hamstrings", calves: "Calves",
 };
 
-const baseMuscles: Record<MuscleKey, number> = {
-  shoulders: 1, chest: 1, arms: 3, core: 5, back: 8, glutes: 11, quads: 13, hamstrings: 16, calves: 9,
-};
+/** Canonical key order, identical to the backend `muscleKeys`. */
+const MUSCLE_ORDER = Object.keys(labels) as MuscleKey[];
 
 // TEMPORARY MOCK FIXTURES — keyed by member id, joined onto persisted profiles.
 // These cover only domains with no database tables yet (sessions, packages,
-// body-map history). They contain no profile data: no name, goal, time,
+// plan-period fields). They contain no profile data: no name, goal, time,
 // duration, preferred days or photo.
 const mockOperationalState: Record<number, MockMemberOperationalState> = {
-  1: { sessionsLeft: 6, sessionsTotal: 12, muscles: baseMuscles, periodStart: "1405/05/27", periodEnd: "1405/07/10" },
-  2: { sessionsLeft: 2, sessionsTotal: 10, muscles: { shoulders: 6, chest: 10, arms: 6, core: 2, back: 2, glutes: 4, quads: 4, hamstrings: 7, calves: 12 }, periodStart: "1405/05/20", periodEnd: "1405/06/31" },
-  3: { sessionsLeft: 9, sessionsTotal: 12, muscles: { shoulders: 12, chest: 12, arms: 9, core: 2, back: 3, glutes: 2, quads: 2, hamstrings: 2, calves: 6 }, periodStart: "1405/06/10", periodEnd: "1405/07/25" },
-  4: { sessionsLeft: 4, sessionsTotal: 8, muscles: { shoulders: 3, chest: 8, arms: 3, core: 3, back: 8, glutes: 1, quads: 1, hamstrings: 5, calves: 6 }, periodStart: "1405/06/01", periodEnd: "1405/07/01" },
+  1: { sessionsLeft: 6, sessionsTotal: 12, periodStart: "1405/05/27", periodEnd: "1405/07/10" },
+  2: { sessionsLeft: 2, sessionsTotal: 10, periodStart: "1405/05/20", periodEnd: "1405/06/31" },
+  3: { sessionsLeft: 9, sessionsTotal: 12, periodStart: "1405/06/10", periodEnd: "1405/07/25" },
+  4: { sessionsLeft: 4, sessionsTotal: 8, periodStart: "1405/06/01", periodEnd: "1405/07/01" },
 };
 
 /** Neutral placeholders for a member with no fixture. Not persisted data. */
 const neutralOperationalState: MockMemberOperationalState = {
   sessionsLeft: 0, sessionsTotal: 0,
-  muscles: Object.fromEntries((Object.keys(labels) as MuscleKey[]).map((k) => [k, 15])) as Record<MuscleKey, number>,
   periodStart: "—", periodEnd: "—",
 };
 
@@ -167,12 +169,17 @@ const coachNav = [
   ["calendar", "Calendar", CalendarDays], ["nutrition", "Nutrition", Apple], ["settings", "Settings", Settings],
 ] as const;
 
-function muscleColor(days: number) {
-  if (days <= 1) return "#dcff28";
-  if (days <= 4) return "#86bd75";
-  if (days <= 7) return "#f0cc64";
-  if (days <= 14) return "#e6a37d";
-  return "#cfd3ce";
+const BUCKET_COLORS = { l0: "#dcff28", l1: "#86bd75", l2: "#f0cc64", l3: "#e6a37d", none: "#cfd3ce" } as const;
+/** Existing Body Map scale, now fed by real days-since (null = nothing recorded). */
+function muscleColor(daysSince: number | null) {
+  return BUCKET_COLORS[freshnessBucket(daysSince)];
+}
+
+/** "Trained today" / "1 day ago" / "12 days ago", or the empty-detail sentence. */
+function freshnessText(entry: MuscleFreshness[MuscleKey]) {
+  if (!entry) return "No muscle detail recorded in the last 30 days";
+  if (entry.daysSince <= 0) return "Trained today";
+  return `${entry.daysSince} ${entry.daysSince === 1 ? "day" : "days"} ago`;
 }
 
 function Avatar({ student, large = false, onClick }: { student: Student; large?: boolean; onClick?: () => void }) {
@@ -202,13 +209,22 @@ function MiniWave() {
 }
 
 type ShapeProps = { k: MuscleKey; d?: string; cx?: number; cy?: number; rx?: number; ry?: number };
-function BodyMap({ student, selected, onSelect }: { student: Student; selected: MuscleKey; onSelect: (m: MuscleKey) => void }) {
+/** The nine canonical muscles as toggle chips; shared by the completion dialog and history editing. */
+function MusclePicker({ value, onChange, disabled }: { value: MuscleKey[]; onChange: (next: MuscleKey[]) => void; disabled?: boolean }) {
+  return <div className="muscle-picker" role="group" aria-label="Muscles trained">{MUSCLE_ORDER.map((key) => { const on = value.includes(key); return <button type="button" key={key} className="muscle-chip" aria-pressed={on} disabled={disabled} onClick={() => onChange(on ? value.filter((k) => k !== key) : [...value, key])}>{labels[key]}</button>; })}</div>;
+}
+
+type BodyMapData = { freshness: MuscleFreshness; status: "loading" | "error" | "ready"; retry: () => void };
+function BodyMap({ student, data, selected, onSelect }: { student: Student; data: BodyMapData; selected: MuscleKey; onSelect: (m: MuscleKey) => void }) {
+  const ready = data.status === "ready";
+  const daysFor = (k: MuscleKey) => (ready ? data.freshness[k]?.daysSince ?? null : null);
+  const anyRecorded = ready && MUSCLE_ORDER.some((k) => data.freshness[k] !== null);
   const shape = ({ k, d, cx, cy, rx, ry }: ShapeProps) => {
-    const common = { fill: muscleColor(student.muscles[k]), onClick: () => onSelect(k), tabIndex: 0, role: "button", "aria-label": labels[k], onKeyDown: (e: React.KeyboardEvent<SVGElement>) => (e.key === "Enter" || e.key === " ") && onSelect(k), className: selected === k ? "muscle active-muscle" : "muscle" };
+    const common = { fill: muscleColor(daysFor(k)), onClick: () => onSelect(k), tabIndex: 0, role: "button", "aria-label": labels[k], onKeyDown: (e: React.KeyboardEvent<SVGElement>) => (e.key === "Enter" || e.key === " ") && onSelect(k), className: selected === k ? "muscle active-muscle" : "muscle" };
     return d ? <path {...common} d={d} /> : <ellipse {...common} cx={cx} cy={cy} rx={rx} ry={ry} />;
   };
   return <article className="body-map">
-    <div className="card-head"><div><span className="eyebrow">TRAINING BALANCE</span><h2>Your body, at a glance.</h2></div><span className="chip">Last 14 days <ChevronDown /></span></div>
+    <div className="card-head"><div><span className="eyebrow">TRAINING FOCUS</span><h2>Your body, at a glance.</h2><p className="body-map-copy">Training focus from session details kept in the last 30 days.</p></div></div>
     <div className="anatomy-stage">
       <svg viewBox="0 0 340 420" role="img" aria-label={`Interactive muscle map for ${student.name}`}>
         <defs><linearGradient id="bodyFade" x1="0" y1="0" x2="0" y2="1"><stop stopColor="#f5f7f3" /><stop offset="1" stopColor="#dce3da" /></linearGradient></defs>
@@ -231,9 +247,10 @@ function BodyMap({ student, selected, onSelect }: { student: Student; selected: 
           {shape({ k: "calves", d: "M49 288q11-10 19 0l-4 51H50z" })}{shape({ k: "calves", d: "M82 288q9-10 19 0l-3 51H84z" })}
         </g>
       </svg>
-      <div className="muscle-pop"><i style={{ background: muscleColor(student.muscles[selected]) }} /><small>{labels[selected]}</small><strong>{student.muscles[selected] <= 1 ? "Trained today" : `${student.muscles[selected]} days ago`}</strong><p>{student.muscles[selected] <= 2 ? "Recovery window active" : student.muscles[selected] > 10 ? "Ready for stimulus" : "Within weekly rhythm"}</p></div>
+      <div className="muscle-pop"><i style={{ background: muscleColor(daysFor(selected)) }} /><small>{labels[selected]}</small>{data.status === "loading" ? <strong>Loading…</strong> : data.status === "error" ? <><strong>Could not load</strong><p role="alert">Session history could not be read. <button type="button" className="text-link" onClick={data.retry}>Retry</button></p></> : <strong>{freshnessText(data.freshness[selected])}</strong>}</div>
     </div>
-    <div className="legend"><span><i className="l0" />0–1d</span><span><i className="l1" />2–4d</span><span><i className="l2" />5–7d</span><span><i className="l3" />8–14d</span></div>
+    <div className="legend"><span><i className="l0" />0–1d</span><span><i className="l1" />2–4d</span><span><i className="l2" />5–7d</span><span><i className="l3" />8–14d</span><span><i className="l4" />Over 14d / none</span></div>
+    {ready && !anyRecorded && <p className="body-map-empty">No muscle detail recorded in the last 30 days.</p>}
   </article>;
 }
 
@@ -249,13 +266,14 @@ function monthRangeOf(dateKey: string) {
   return { from: grid.startDateKey, to: grid.endDateKey };
 }
 
-function CoachDashboard({ students, selected, select, apiFetch, version, store, onAttendance, logSession, addClient, openCalendar, muscle, setMuscle }: {
+function CoachDashboard({ students, selected, select, apiFetch, version, store, onAttendance, logSession, addClient, openCalendar, muscle, setMuscle, bodyMap }: {
   students: Student[]; selected?: Student; select: (id: number) => void;
   apiFetch: ApiFetch;
   /** Bumped by CoachApp after a Session write so Today reloads from the database. */
   version: number; store: SessionsStore;
   onAttendance: OnAttendance; logSession: () => void;
   addClient: () => void; openCalendar: () => void; muscle: MuscleKey; setMuscle: (m: MuscleKey) => void;
+  bodyMap: BodyMapData;
 }) {
   // Same read model as the Calendar: expected schedule merged with persisted Sessions.
   const [todayKey] = useState(() => getAppDateKey());
@@ -294,32 +312,34 @@ function CoachDashboard({ students, selected, select, apiFetch, version, store, 
         <Button className="wide-dark" onClick={logSession}>Log a session <ArrowRight /></Button>
       </article>}
     </section>
-    {selected && <section className="body-grid">
-      <BodyMap student={selected} selected={muscle} onSelect={setMuscle} />
-      <article className="surface insight-card"><span className="eyebrow">WEEKLY SIGNAL</span><h2>Upper body is carrying the load.</h2><div className="score"><strong>72</strong><span>/ 100<br />balance score</span></div><p>Chest and shoulders were trained in three consecutive sessions. Consider a lower-body or mobility focus next.</p><div className="recommend"><Sparkles /><div><strong>Next best focus</strong><span>Glutes · Hamstrings · Mobility</span></div></div><button className="text-link">Open full body history <ArrowRight /></button></article>
+    {selected && <section className="body-grid body-grid-single">
+      <BodyMap student={selected} data={bodyMap} selected={muscle} onSelect={setMuscle} />
     </section>}
   </>;
 }
 
-function Clients({ apiFetch, students, selected, select, add, log, editSchedule, editProfile, noteHistory, noteHistoryLoading, noteHistoryError, retryNoteHistory, muscle, setMuscle }: {
+function Clients({ apiFetch, students, selected, select, add, log, editSchedule, editProfile, noteHistory, noteHistoryLoading, noteHistoryError, retryNoteHistory, muscle, setMuscle, bodyMap, onEditMuscles }: {
   apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
   students: Student[]; selected: Student; select: (id: number) => void; add: () => void;
   log: () => void; editSchedule: () => void; editProfile: () => void;
   noteHistory: SessionHistoryItem[]; noteHistoryLoading: boolean; noteHistoryError: string | null;
   retryNoteHistory: () => void;
   muscle: MuscleKey; setMuscle: (m: MuscleKey) => void;
+  bodyMap: BodyMapData; onEditMuscles: (item: SessionHistoryItem) => void;
 }) {
-  // The API intentionally returns every persisted status; only Sessions that
-  // actually have a persisted Note are shown here (Notes only ever attach to
-  // completed Sessions, including completed former replacements).
-  const notes = noteHistory.filter(
-    (item): item is SessionHistoryItem & { note: NonNullable<SessionHistoryItem["note"]> } => item.note !== null
-  );
+  // The API returns every persisted status. Detail (note, muscles) only ever attaches
+  // to completed Sessions, and only exists inside the 30-day window, so the list is
+  // the completed Sessions still inside it; older rows keep their attendance
+  // elsewhere (Calendar) but have no detail to show or edit.
+  const todayKey = getAppDateKey();
+  const retained = noteHistory
+    .map((item) => ({ item, dateKey: getAppDateKey(new Date(item.scheduledAt)) }))
+    .filter(({ item, dateKey }) => item.status === "completed" && isDateKeyInDetailWindow(dateKey, todayKey));
   return <>
     <Heading eyebrow="CLIENT DIRECTORY" title="Your people." sub={`${students.length} active ${students.length === 1 ? "client" : "clients"}`} action={<Button className="primary-action" onClick={add}><Plus /> Add client</Button>} />
     <section className="clients-grid">
       <article className="surface directory"><label className="search"><Search /><input placeholder="Search clients" /></label><div>{students.map((s) => <button className={selected.id === s.id ? "selected-client" : ""} key={s.id} onClick={() => select(s.id)}><Avatar student={s} /><span><strong>{s.name}</strong><small>{s.goal}</small></span><b>{s.sessionsLeft}<small>left</small></b><ChevronRight /></button>)}</div></article>
-      <div className="client-detail"><article className="surface profile-card"><div className="person"><Avatar student={selected} large /><div><span className="eyebrow">ACTIVE CLIENT</span><h2>{selected.name}</h2><p>{selected.goal}</p>{!isProfileComplete(selected) && <span className="chip">Profile incomplete</span>}</div></div><div className="action-pair"><Button className="soft-button" onClick={editProfile}><CircleUserRound /> Edit profile</Button><Button className="soft-button" onClick={editSchedule}><CalendarDays /> Edit schedule</Button><Button className="wide-dark fit" onClick={log}><Plus /> Log session</Button></div><div className="profile-stats"><span><strong>{selected.phone ?? NOT_RECORDED}</strong>phone</span><span><strong>{measurement(selected.weightKg, "kg")}</strong>weight</span><span><strong>{measurement(selected.heightCm, "cm")}</strong>height</span></div><div className="profile-stats"><span><strong>{selected.sessionsLeft}</strong>sessions left</span><span><strong>{selected.defaultDurationMinutes}</strong>minutes / session</span><span><strong>{selected.preferredDays.length}</strong>weekly days</span></div></article><MemberCycleSection key={selected.id} memberId={selected.id} apiFetch={apiFetch} /><article className="surface session-notes-card"><div className="card-head"><div><span className="eyebrow">COACH SESSION NOTES</span><h2>Recent observations</h2></div><span className="chip">{notes.length} notes</span></div>{noteHistoryLoading ? <p className="policy-note">Loading session notes…</p> : noteHistoryError ? <p className="policy-note" role="alert">{noteHistoryError} <button type="button" className="text-link" onClick={retryNoteHistory}>Retry</button></p> : notes.length === 0 ? <p className="policy-note">No session notes from the last 30 days.</p> : <div className="session-note-list">{notes.map((item) => <div className="session-note" key={item.id}><time>{formatJalaliDate(item.scheduledAt)}</time><div><p>{item.note.note}</p></div></div>)}</div>}</article><BodyMap student={selected} selected={muscle} onSelect={setMuscle} /></div>
+      <div className="client-detail"><article className="surface profile-card"><div className="person"><Avatar student={selected} large /><div><span className="eyebrow">ACTIVE CLIENT</span><h2>{selected.name}</h2><p>{selected.goal}</p>{!isProfileComplete(selected) && <span className="chip">Profile incomplete</span>}</div></div><div className="action-pair"><Button className="soft-button" onClick={editProfile}><CircleUserRound /> Edit profile</Button><Button className="soft-button" onClick={editSchedule}><CalendarDays /> Edit schedule</Button><Button className="wide-dark fit" onClick={log}><Plus /> Log session</Button></div><div className="profile-stats"><span><strong>{selected.phone ?? NOT_RECORDED}</strong>phone</span><span><strong>{measurement(selected.weightKg, "kg")}</strong>weight</span><span><strong>{measurement(selected.heightCm, "cm")}</strong>height</span></div><div className="profile-stats"><span><strong>{selected.sessionsLeft}</strong>sessions left</span><span><strong>{selected.defaultDurationMinutes}</strong>minutes / session</span><span><strong>{selected.preferredDays.length}</strong>weekly days</span></div></article><MemberCycleSection key={selected.id} memberId={selected.id} apiFetch={apiFetch} /><article className="surface session-notes-card"><div className="card-head"><div><span className="eyebrow">SESSION HISTORY</span><h2>Recent sessions</h2></div><span className="chip">{retained.length} {retained.length === 1 ? "session" : "sessions"}</span></div>{noteHistoryLoading ? <p className="policy-note">Loading session history…</p> : noteHistoryError ? <p className="policy-note" role="alert">{noteHistoryError} <button type="button" className="text-link" onClick={retryNoteHistory}>Retry</button></p> : retained.length === 0 ? <p className="policy-note">No completed sessions with details from the last 30 days.</p> : <div className="session-note-list">{retained.map(({ item }) => <div className="session-note" key={item.id} data-session={item.id}><time>{formatJalaliDate(item.scheduledAt)}{item.replacementForId !== null && <small>Replacement</small>}</time><div>{item.note && <p>{item.note.note}</p>}{item.muscles.length > 0 && <div className="muscle-tags" aria-label="Muscles trained">{item.muscles.map((key) => <span className="muscle-tag" key={key}>{labels[key]}</span>)}</div>}<button type="button" className="text-link edit-muscles" onClick={() => onEditMuscles(item)}>{item.muscles.length > 0 ? "Edit muscles" : "Add muscles"}</button></div></div>)}</div>}</article><BodyMap student={selected} data={bodyMap} selected={muscle} onSelect={setMuscle} /></div>
     </section>
   </>;
 }
@@ -450,11 +470,11 @@ function SettingsView({ absence, setAbsence }: { absence: boolean; setAbsence: (
   const cards = [
     { icon: ShieldCheck, label: "SESSION POLICY", title: "Absence handling", text: "When enabled, a client absence automatically uses one session. You can still override individual cases.", control: true },
     { icon: Bell, label: "REMINDERS", title: "Session nudges", text: "Send a gentle reminder before scheduled sessions and when a plan has two sessions remaining.", control: false },
-    { icon: Target, label: "TRAINING RHYTHM", title: "Body-map thresholds", text: "Muscle freshness uses your default rhythm: active up to 4 days, attention after 7 days, ready after 14 days." },
+    { icon: Target, label: "BODY MAP", title: "How the body map is coloured", text: "Each muscle shows days since it was last recorded in a session, using details kept for 30 days: 0–1, 2–4, 5–7 and 8–14 days. Grey means nothing recorded." },
   ];
   return <>
     <Heading eyebrow="COACH SETTINGS" title="Keep your rules clear." sub="Policies apply across your independent coaching space." />
-    <section className="settings-grid">{cards.map((c, i) => { const Icon = c.icon; return <article className="surface setting-card" key={c.title}><span className={`setting-icon setting-${i}`}><Icon /></span><div><span className="eyebrow">{c.label}</span><h2>{c.title}</h2><p>{c.text}</p></div>{i < 2 ? <div className="setting-control"><span><strong>{i ? "Session reminders" : "Count absence as a used session"}</strong><small>{i ? "24 hours before each session" : absence ? "Enabled for new absences" : "Balance stays unchanged"}</small></span><Switch checked={i ? true : absence} onCheckedChange={(v) => { if (!i) setAbsence(v); toast.success("Preference updated"); }} /></div> : <button className="text-link" onClick={() => toast.info("Threshold editor comes next")}>Review thresholds <ArrowRight /></button>}</article>; })}</section>
+    <section className="settings-grid">{cards.map((c, i) => { const Icon = c.icon; return <article className="surface setting-card" key={c.title}><span className={`setting-icon setting-${i}`}><Icon /></span><div><span className="eyebrow">{c.label}</span><h2>{c.title}</h2><p>{c.text}</p></div>{i < 2 ? <div className="setting-control"><span><strong>{i ? "Session reminders" : "Count absence as a used session"}</strong><small>{i ? "24 hours before each session" : absence ? "Enabled for new absences" : "Balance stays unchanged"}</small></span><Switch checked={i ? true : absence} onCheckedChange={(v) => { if (!i) setAbsence(v); toast.success("Preference updated"); }} /></div> : null}</article>; })}</section>
   </>;
 }
 
@@ -473,6 +493,8 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
   const [absence, setAbsence] = useState(true);
   const [noteHistory, setNoteHistory] = useState<SessionHistoryItem[]>([]);
   const [noteHistoryLoading, setNoteHistoryLoading] = useState(false);
+  // Which Member `noteHistory` belongs to, so a Member switch reads as loading, never as stale or empty data.
+  const [noteHistoryOwner, setNoteHistoryOwner] = useState<number | null>(null);
   const [noteHistoryError, setNoteHistoryError] = useState<string | null>(null);
   // Bumped to force a refetch of the current selected Member's history —
   // after a Note PUT succeeds, or from Retry. The effect always re-reads
@@ -493,6 +515,10 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
   const [savingSession, setSavingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [sessionNoteText, setSessionNoteText] = useState("");
+  const [sessionMuscleSelection, setSessionMuscleSelection] = useState<MuscleKey[]>([]);
+  // Which detail pieces already persisted for the resolved Session (retry sends only the rest).
+  const [noteSaved, setNoteSaved] = useState(false);
+  const [musclesSaved, setMusclesSaved] = useState(false);
   const [resolvedSessionId, setResolvedSessionId] = useState<number | null>(null);
   const [clientDays, setClientDays] = useState<string[]>(["Sat", "Mon", "Wed"]);
   const [clientError, setClientError] = useState<string | null>(null);
@@ -513,6 +539,17 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
   const [sessionTargetId, setSessionTargetId] = useState<number | null>(null);
   const selected: Student | undefined = useMemo(() => students.find((s) => s.id === selectedId) ?? students[0], [students, selectedId]);
   const nav = coachNav;
+
+  // One Member-history request feeds the notes list, the muscle chips and BOTH Body Maps.
+  const bodyMap: BodyMapData = useMemo(() => ({
+    freshness: buildMuscleFreshness(noteHistory, getAppDateKey()),
+    status: noteHistoryOwner !== selected?.id || noteHistoryLoading ? "loading" : noteHistoryError ? "error" : "ready",
+    retry: () => setNoteHistoryVersion((value) => value + 1),
+  }), [noteHistory, noteHistoryOwner, noteHistoryLoading, noteHistoryError, selected?.id]);
+
+  const [muscleEdit, setMuscleEdit] = useState<{ item: SessionHistoryItem; selection: MuscleKey[] } | null>(null);
+  const [muscleEditError, setMuscleEditError] = useState<string | null>(null);
+  const [savingMuscleEdit, setSavingMuscleEdit] = useState(false);
 
   // Persisted member profiles come from the database; there is no mock fallback.
   // Kept free of setState so it can be shared by the mount effect and Retry.
@@ -558,6 +595,7 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
       // synchronously in the effect body, so this can't cascade a second
       // render pass before the request even starts.
       setNoteHistory([]);
+      setNoteHistoryOwner(null);
       setNoteHistoryError(null);
       setNoteHistoryLoading(true);
       try {
@@ -566,10 +604,10 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
         const payload: unknown = await response.json();
         const list = (payload as { sessions?: unknown })?.sessions;
         if (!Array.isArray(list)) throw new Error("Response did not contain a sessions array");
-        if (active) setNoteHistory(list as SessionHistoryItem[]);
+        if (active) { setNoteHistory(list as SessionHistoryItem[]); setNoteHistoryOwner(memberId); }
       } catch (error) {
         console.error("Could not load session history", error);
-        if (active) setNoteHistoryError("Could not load session history.");
+        if (active) { setNoteHistoryError("Could not load session history."); setNoteHistoryOwner(memberId); }
       } finally {
         if (active) setNoteHistoryLoading(false);
       }
@@ -621,6 +659,9 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
     setSessionDateKey(dateKey ?? getAppDateKey());
     setSessionError(null);
     setSessionNoteText("");
+    setSessionMuscleSelection([]);
+    setNoteSaved(false);
+    setMusclesSaved(false);
     setResolvedSessionId(null);
     setSessionSource(source);
     setSessionTargetId(targetSessionId);
@@ -814,51 +855,107 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
         setCalendarVersion((value) => value + 1);
       }
 
-      const trimmedNote = sessionNoteText.trim();
-      if (!trimmedNote) {
-        setSessionOpen(false);
-        setResolvedSessionId(null);
-        setSessionNoteText("");
-        toast.success(`Session confirmed for ${member.name}`);
-        return;
-      }
-
       if (completedSessionId === null) {
         // Defensive only: the branches above always resolve a real id before
-        // reaching here. Never fabricate one to attempt a note write.
+        // reaching here. Never fabricate one to attempt a detail write.
         setSessionError("Could not determine the saved session.");
         return;
       }
 
-      const noteResponse = await apiFetch(`/api/sessions/${completedSessionId}/note`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note: trimmedNote }),
-      });
+      // Detail (note, muscles) is only writable inside the retention window; an
+      // older backfill keeps its attendance but never sends detail.
+      const detailWritable = isDateKeyInDetailWindow(sessionDateKey, getAppDateKey());
+      const trimmedNote = detailWritable ? sessionNoteText.trim() : "";
+      const chosenMuscles = detailWritable ? MUSCLE_ORDER.filter((key) => sessionMuscleSelection.includes(key)) : [];
 
-      if (!noteResponse.ok) {
-        // The Session write already succeeded and its id is retained above;
-        // keep the dialog open with the note text intact so Retry saves only
-        // the note, never a second Session write.
-        setSessionError(
-          "Session saved, but the note could not be saved. Retry will save the note only."
-        );
+      // Each piece is saved at most once: a retry sends only what is still unsaved,
+      // and never touches the Session itself. Tracked with locals as well as state
+      // because state updates are not visible until the next render.
+      let noteDone = noteSaved || !trimmedNote;
+      let musclesDone = musclesSaved || chosenMuscles.length === 0;
+      let noteFailed = false;
+      let musclesFailed = false;
+
+      if (!noteDone) {
+        const noteResponse = await apiFetch(`/api/sessions/${completedSessionId}/note`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ note: trimmedNote }),
+        });
+        if (noteResponse.ok) { noteDone = true; setNoteSaved(true); } else noteFailed = true;
+      }
+      if (!musclesDone) {
+        // Whole-set replacement; canonical slugs only.
+        const musclesResponse = await apiFetch(`/api/sessions/${completedSessionId}/muscles`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ muscles: chosenMuscles }),
+        });
+        if (musclesResponse.ok) { musclesDone = true; setMusclesSaved(true); } else musclesFailed = true;
+      }
+
+      // Detail is part of the Client Profile history response: refetch rather than
+      // fabricating local objects, so the persisted API stays the source of truth.
+      if ((noteDone && trimmedNote) || (musclesDone && chosenMuscles.length > 0)) setNoteHistoryVersion((value) => value + 1);
+
+      if (noteFailed || musclesFailed) {
+        // The Session write already succeeded and its id is retained: keep the
+        // dialog open with the entries intact; Retry saves only what is unsaved.
+        const what = noteFailed && musclesFailed ? "the note and muscle details" : noteFailed ? "the note" : "muscle details";
+        setSessionError(`Session saved, but ${what} could not be saved. Retry will save the remaining details only.`);
         return;
       }
 
-      // Note PUT just succeeded: refetch the Client Profile history rather
-      // than fabricating a local Note object, so the persisted API stays
-      // the single source of truth.
-      setNoteHistoryVersion((value) => value + 1);
       setSessionOpen(false);
       setResolvedSessionId(null);
       setSessionNoteText("");
-      toast.success(`Session and note saved for ${member.name}`);
+      setSessionMuscleSelection([]);
+      toast.success(
+        trimmedNote || chosenMuscles.length > 0
+          ? `Session and details saved for ${member.name}`
+          : `Session confirmed for ${member.name}`
+      );
     } catch (error) {
       console.error("Could not save session", error);
       setSessionError("Could not reach the server.");
     } finally {
       setSavingSession(false);
+    }
+  }
+  function openMuscleEditor(item: SessionHistoryItem) {
+    setMuscleEditError(null);
+    setMuscleEdit({ item, selection: [...item.muscles] });
+  }
+  async function saveMuscleEdit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!muscleEdit || savingMuscleEdit) return;
+    setSavingMuscleEdit(true);
+    setMuscleEditError(null);
+    try {
+      // Whole-set replacement; an empty set is an explicit "clear". Nothing but
+      // session_muscles changes (status, replacementForId and coachId are untouched).
+      const response = await apiFetch(`/api/sessions/${muscleEdit.item.id}/muscles`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ muscles: MUSCLE_ORDER.filter((key) => muscleEdit.selection.includes(key)) }),
+      });
+      if (response.ok) {
+        setMuscleEdit(null);
+        setNoteHistoryVersion((value) => value + 1);
+        toast.success("Muscles updated");
+      } else if (response.status === 403) {
+        setMuscleEditError("You can’t edit muscles on this session.");
+      } else if (response.status === 409) {
+        setMuscleEditError("These details can no longer be edited.");
+        setNoteHistoryVersion((value) => value + 1);
+      } else {
+        setMuscleEditError("Could not save the muscles.");
+      }
+    } catch (error) {
+      console.error("Could not save muscles", error);
+      setMuscleEditError("Could not reach the server.");
+    } finally {
+      setSavingMuscleEdit(false);
     }
   }
   function openProfileEditor() {
@@ -993,14 +1090,14 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
   const openAddClient = () => { setClientError(null); setClientOpen(true); };
   let content: React.ReactNode;
   if (view === "clients") content = selected
-    ? <Clients apiFetch={apiFetch} students={students} selected={selected} select={setSelectedId} add={openAddClient} log={() => openSession()} editSchedule={() => openScheduleEditor()} editProfile={openProfileEditor} noteHistory={noteHistory} noteHistoryLoading={noteHistoryLoading} noteHistoryError={noteHistoryError} retryNoteHistory={() => setNoteHistoryVersion((value) => value + 1)} muscle={muscle} setMuscle={setMuscle} />
+    ? <Clients apiFetch={apiFetch} students={students} selected={selected} select={setSelectedId} add={openAddClient} log={() => openSession()} editSchedule={() => openScheduleEditor()} editProfile={openProfileEditor} noteHistory={noteHistory} noteHistoryLoading={noteHistoryLoading} noteHistoryError={noteHistoryError} retryNoteHistory={() => setNoteHistoryVersion((value) => value + 1)} muscle={muscle} setMuscle={setMuscle} bodyMap={bodyMap} onEditMuscles={openMuscleEditor} />
     : <><Heading eyebrow="CLIENT DIRECTORY" title="No members yet." sub="Add your first client to start scheduling sessions." action={<Button className="primary-action" onClick={openAddClient}><Plus /> Add client</Button>} /><article className="surface empty-members"><div className="empty-agenda"><UsersRound /><strong>No members yet.</strong><span>Clients you add will appear here.</span></div></article></>;
   else if (view === "calendar") content = <CalendarView students={students} apiFetch={apiFetch} version={calendarVersion} store={sessionsStore} onAttendance={beginAttendance} editSchedule={openScheduleEditor} />;
   else if (view === "nutrition") content = selected
     ? <Nutrition meals={initialMeals} students={students} selected={selected} select={setSelectedId} />
     : <><Heading eyebrow="NUTRITION LOG" title="Your clients’ nutrition." sub="Every student’s weekly pattern and latest food entries in one view." /><article className="surface empty-members"><div className="empty-agenda"><Apple /><strong>No members yet.</strong><span>Nutrition appears once you have clients.</span></div></article></>;
   else if (view === "settings") content = <SettingsView absence={absence} setAbsence={setAbsence} />;
-  else content = <CoachDashboard students={students} selected={selected} select={setSelectedId} apiFetch={apiFetch} version={calendarVersion} store={sessionsStore} onAttendance={beginAttendance} logSession={() => openSession()} addClient={openAddClient} openCalendar={() => setView("calendar")} muscle={muscle} setMuscle={setMuscle} />;
+  else content = <CoachDashboard students={students} selected={selected} select={setSelectedId} apiFetch={apiFetch} version={calendarVersion} store={sessionsStore} onAttendance={beginAttendance} logSession={() => openSession()} addClient={openAddClient} openCalendar={() => setView("calendar")} muscle={muscle} setMuscle={setMuscle} bodyMap={bodyMap} />;
 
   return <div className="app-shell">
     <aside className="sidebar"><div className="brand"><AppLogo onClick={() => setLogoOpen(true)} /><span>FIT & MISCHIEF</span></div><div className="workspace"><AccountPhoto src={coachPhoto} initials="JL" name="Jordan Lee" onClick={() => setProfilePhotoOpen(true)} /><div><strong>Jordan Lee</strong><small>Independent coach</small></div><ChevronDown /></div><nav>{nav.map(([id, text, Icon]) => <button key={id} className={view === id ? "nav-active" : ""} onClick={() => setView(id)}><Icon /><span>{text}</span>{id === "clients" && <b>{students.length}</b>}</button>)}</nav><footer><button><MessageCircle />Support</button><button onClick={() => onLogout()}><LogOut />Sign out</button></footer></aside>
@@ -1011,7 +1108,8 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
     <Dialog open={profilePhotoOpen} onOpenChange={setProfilePhotoOpen}><DialogContent className="app-dialog photo-dialog"><DialogHeader><DialogTitle>Profile photo</DialogTitle><DialogDescription>Choose a photo for Jordan Lee.</DialogDescription></DialogHeader><div className="photo-preview">{coachPhoto ? <img src={coachPhoto} alt="Jordan Lee" /> : <span>JL</span>}</div><label className="photo-upload"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => chooseProfilePhoto(e.target.files?.[0])} /><span><Plus /> Choose image</span><small>PNG, JPG or WebP</small></label><DialogFooter><Button className="wide-dark" onClick={() => setProfilePhotoOpen(false)}>Done</Button></DialogFooter></DialogContent></Dialog>
     <Dialog open={clientOpen} onOpenChange={setClientOpen}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>Add a new client</DialogTitle><DialogDescription>Contact details, measurements and preferred rhythm.</DialogDescription></DialogHeader><form className="dialog-form" onSubmit={addClient}><label>Full name<Input name="name" placeholder="e.g. Sam Taylor" required /></label><label>Phone number<Input name="phone" type="tel" placeholder="e.g. +15550001111" required /></label><div className="form-grid"><label>Weight (kg)<Input name="weight" type="number" step="0.1" min="1" placeholder="72.5" required /></label><label>Height (cm)<Input name="height" type="number" step="1" min="1" placeholder="178" required /></label></div><label>Primary goal<Input name="goal" placeholder="Strength, mobility, endurance…" required /></label><div className="form-grid"><label>Preferred time<Input name="time" type="time" defaultValue="10:00" required /></label><label>Session duration<select name="duration" defaultValue="60"><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="50">50 minutes</option><option value="60">60 minutes</option><option value="75">75 minutes</option><option value="90">90 minutes</option></select></label></div><label>Preferred training days</label><div className="day-picker">{weekDays.map((day) => <button type="button" className={clientDays.includes(day) ? "selected-day" : ""} key={day} onClick={() => setClientDays((all) => all.includes(day) ? all.filter((d) => d !== day) : [...all, day])}>{day}</button>)}</div>{clientError && <p className="policy-note" role="alert">{clientError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setClientOpen(false)}>Cancel</Button><Button className="wide-dark" type="submit" disabled={!clientDays.length || creatingClient}>{creatingClient ? "Creating…" : "Create client"}</Button></DialogFooter></form></DialogContent></Dialog>
     {selected && <>
-    <Dialog open={sessionOpen} onOpenChange={(open) => { if (!savingSession) setSessionOpen(open); }}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>{sessionSource === "attendance" ? "Complete this session" : "Log session"}</DialogTitle><DialogDescription>Confirm the completed session for {selected.name} on {jalaliLabelForDateKey(sessionDateKey)}.</DialogDescription></DialogHeader><form className="dialog-form" onSubmit={logSession}><label>Session note (optional)<Textarea value={sessionNoteText} onChange={(e) => setSessionNoteText(e.target.value)} placeholder="Intensity, limitations, progress or next-session cues…" /></label>{sessionError && <p className="policy-note" role="alert">{sessionError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setSessionOpen(false)} disabled={savingSession}>Cancel</Button><Button className="wide-dark" type="submit" disabled={savingSession}>{savingSession ? "Saving…" : sessionSource === "attendance" ? "Save & confirm attendance" : "Save session"}</Button></DialogFooter></form></DialogContent></Dialog>
+    <Dialog open={sessionOpen} onOpenChange={(open) => { if (!savingSession) setSessionOpen(open); }}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>{sessionSource === "attendance" ? "Complete this session" : "Log session"}</DialogTitle><DialogDescription>Confirm the completed session for {selected.name} on {jalaliLabelForDateKey(sessionDateKey)}.</DialogDescription></DialogHeader>{(() => { const detailWritable = isDateKeyInDetailWindow(sessionDateKey, getAppDateKey()); const retrying = resolvedSessionId !== null; return <form className="dialog-form" onSubmit={logSession}><label>Session note (optional)<Textarea value={sessionNoteText} disabled={!detailWritable || noteSaved} onChange={(e) => setSessionNoteText(e.target.value)} placeholder="Intensity, limitations, progress or next-session cues…" /></label><div className="muscle-field"><span className="muscle-field-label">Muscles trained (optional)</span><MusclePicker value={sessionMuscleSelection} onChange={setSessionMuscleSelection} disabled={!detailWritable || musclesSaved || savingSession} /></div>{!detailWritable && <p className="policy-note">Session details are only editable for 30 days.</p>}{sessionError && <p className="policy-note" role="alert">{sessionError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setSessionOpen(false)} disabled={savingSession}>{retrying ? "Close" : "Cancel"}</Button><Button className="wide-dark" type="submit" disabled={savingSession}>{savingSession ? "Saving…" : retrying ? "Retry" : sessionSource === "attendance" ? "Save & confirm attendance" : "Save session"}</Button></DialogFooter></form>; })()}</DialogContent></Dialog>
+    <Dialog open={muscleEdit !== null} onOpenChange={(open) => { if (!open && !savingMuscleEdit) setMuscleEdit(null); }}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>Edit muscles</DialogTitle><DialogDescription>Muscles trained for {selected.name} on {muscleEdit ? formatJalaliDate(muscleEdit.item.scheduledAt) : ""}. Clearing every chip removes the muscle detail.</DialogDescription></DialogHeader><form className="dialog-form" onSubmit={saveMuscleEdit}><MusclePicker value={muscleEdit?.selection ?? []} onChange={(selection) => setMuscleEdit((current) => current && { ...current, selection })} disabled={savingMuscleEdit} />{muscleEditError && <p className="policy-note" role="alert">{muscleEditError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setMuscleEdit(null)} disabled={savingMuscleEdit}>Cancel</Button><Button className="wide-dark" type="submit" disabled={savingMuscleEdit}>{savingMuscleEdit ? "Saving…" : "Save muscles"}</Button></DialogFooter></form></DialogContent></Dialog>
     <Dialog open={absenceOpen} onOpenChange={(open) => { if (!savingAbsence) setAbsenceOpen(open); }}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>Reschedule before marking absent</DialogTitle><DialogDescription>The missed session for {selected.name} was on {jalaliLabelForDateKey(absenceDateKey)}. Choose a replacement date before it is recorded as absent.</DialogDescription></DialogHeader><form className="dialog-form" noValidate onSubmit={recordAbsence}><label>Replacement day</label><div className="replacement-days">{replacementChoices.map((choice) => <button type="button" className={replacementDateKey === choice.dateKey ? "selected-day" : ""} key={choice.dateKey} onClick={() => setReplacementDateKey(choice.dateKey)}><small>{choice.weekday}</small><strong>{choice.jalaliDay} {choice.jalaliMonthName}</strong></button>)}</div><label>Or choose a date<Input type="date" name="replacementDate" min={absenceDateKey} value={replacementDateKey} onChange={(e) => setReplacementDateKey(e.target.value)} /></label><label>Replacement time<Input name="time" type="time" defaultValue={selected.defaultStartTime} required /></label><div className="policy-note"><CalendarDays /><span><strong>{absence ? "One session will be used" : "Session balance will stay unchanged"}</strong><small>This follows the coach’s current absence policy.</small></span></div>{absenceError && <p className="policy-note" role="alert">{absenceError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setAbsenceOpen(false)} disabled={savingAbsence}>Cancel</Button><Button className="wide-dark" type="submit" disabled={!replacementDateKey || savingAbsence}>{savingAbsence ? "Saving…" : "Confirm absence & reschedule"}</Button></DialogFooter></form></DialogContent></Dialog>
     <Dialog open={profileOpen} onOpenChange={setProfileOpen}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>Edit member profile</DialogTitle><DialogDescription>Contact details and measurements for {selected.name}.</DialogDescription></DialogHeader><form key={selected.id} className="dialog-form" onSubmit={updateProfile}><label>Full name<Input name="name" defaultValue={selected.name} required /></label><label>Phone number<Input name="phone" type="tel" defaultValue={selected.phone ?? ""} placeholder="e.g. +15550001111" required /></label><div className="form-grid"><label>Weight (kg)<Input name="weight" type="number" step="0.1" min="1" defaultValue={selected.weightKg ?? ""} placeholder="72.5" required /></label><label>Height (cm)<Input name="height" type="number" step="1" min="1" defaultValue={selected.heightCm ?? ""} placeholder="178" required /></label></div><label>Primary goal<Input name="goal" defaultValue={selected.goal} required /></label>{profileError && <p className="policy-note" role="alert">{profileError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setProfileOpen(false)}>Cancel</Button><Button className="wide-dark" type="submit" disabled={savingProfile}>{savingProfile ? "Saving\u2026" : "Save profile"}</Button></DialogFooter></form></DialogContent></Dialog>
     <Dialog open={scheduleOpen} onOpenChange={setScheduleOpen}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>Edit training schedule</DialogTitle><DialogDescription>Update {selected.name}’s usual training days, start time and session length.</DialogDescription></DialogHeader><form key={selected.id} className="dialog-form" onSubmit={updateSchedule}><label>Training days</label><div className="day-picker">{weekDays.map((day) => <button type="button" className={scheduleDays.includes(day) ? "selected-day" : ""} key={day} onClick={() => setScheduleDays((all) => all.includes(day) ? all.filter((d) => d !== day) : [...all, day])}>{day}</button>)}</div><div className="form-grid"><label>Start time<Input name="time" type="time" defaultValue={selected.defaultStartTime} required /></label><label>Session duration<select name="duration" defaultValue={selected.defaultDurationMinutes}><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="50">50 minutes</option><option value="60">60 minutes</option><option value="75">75 minutes</option><option value="90">90 minutes</option></select></label></div>{scheduleError && <p className="policy-note" role="alert">{scheduleError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setScheduleOpen(false)}>Cancel</Button><Button className="wide-dark" type="submit" disabled={!scheduleDays.length || savingSchedule}>{savingSchedule ? "Saving…" : "Update schedule"}</Button></DialogFooter></form></DialogContent></Dialog>

@@ -73,6 +73,12 @@ export async function GET(
 
     if (!session) return notFound("Session not found.");
 
+    // Detail past retention reads as empty immediately, before cron deletes the
+    // row. Reads never 409 and never delete.
+    if (isSessionDetailExpired(session.scheduledAt)) {
+      return Response.json({ note: null }, { status: 200 });
+    }
+
     const [row] = await db
       .select(noteColumns)
       .from(sessionNotes)
