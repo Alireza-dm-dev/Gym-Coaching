@@ -185,7 +185,7 @@ describe("Coach Calendar UI (real browser)", () => {
   it("Coach login -> Calendar loads exactly the current Jalali month range, no per-day/per-Member fan-out", async () => {
     page = await newPage();
     await login(COACH1, FIXTURES[COACH1]);
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     await openCalendar();
     assert.ok(rangeRequests.includes(rangeKey(CUR)), `missing ${rangeKey(CUR)} in ${rangeRequests}`);
     assert.equal(new Set(rangeRequests).size, rangeRequests.length, "a range was requested twice");
@@ -325,7 +325,7 @@ describe("Coach Calendar UI (real browser)", () => {
     await page.context().close();
     page = await newPage();
     await login(COACH1, FIXTURES[COACH1]);
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     await todayLoaded();
     const rows = await todayRows();
     const names = rows.map((r) => r[0]);
@@ -751,7 +751,7 @@ describe("Coach Calendar UI (real browser)", () => {
     await page.context().close();
     page = await newPage();
     await login(COACH_B, COACH_B_PASSWORD);
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     const navLabels = await page.locator("aside.sidebar nav button").evaluateAll((els) => els.map((e) => e.innerText.replace(/\d+$/, "").trim()));
     assert.deepEqual(navLabels, ["Today", "Clients", "Calendar", "Nutrition", "Settings"]);
     assert.ok(await page.locator("aside.sidebar").getByRole("button", { name: /sign out/i }).isVisible());

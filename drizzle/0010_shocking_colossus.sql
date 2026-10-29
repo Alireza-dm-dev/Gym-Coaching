@@ -1,0 +1,1 @@
+ALTER TABLE `coaches` ADD `photo_url` text;

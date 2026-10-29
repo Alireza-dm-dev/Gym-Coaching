@@ -127,7 +127,7 @@ describe("Coach Nutrition UI (real browser)", () => {
     await page.getByLabel("Email").fill(email);
     await page.getByLabel("Password").fill(PASSWORD);
     await page.getByRole("button", { name: /sign in|log in|login/i }).click();
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
   };
   const loaded = () => page.waitForFunction(() => !/Loading nutrition activity/.test(document.body.innerText));
   const openNutrition = async () => {
@@ -306,7 +306,7 @@ describe("Coach Nutrition UI (real browser)", () => {
 
   it("local errors keep the shell and roster: 500 -> Retry recovers; 403 -> permission message; no stale or mock numbers", async () => {
     await page.reload();
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     const failing = "**/api/nutrition**";
     await page.route(failing, (route) => route.fulfill({ status: 500, contentType: "application/json", body: '{"error":"boom"}' }));
     await page.locator("aside.sidebar nav").getByRole("button", { name: "Nutrition" }).click();
@@ -330,7 +330,7 @@ describe("Coach Nutrition UI (real browser)", () => {
   it("inactive Member login does not remove the Member or their meals from the assigned Coach", async () => {
     sql(`UPDATE users SET is_active = 0 WHERE id = ${M[2].user_id};`);
     await page.reload();
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     await openNutrition();
     await goWeek("Previous week", PREV);
     assert.match(await rowOf(M[2]), /Snacks logged on most days/);
@@ -345,7 +345,7 @@ describe("Coach Nutrition UI (real browser)", () => {
     await bPage.getByLabel("Email").fill(COACH_B);
     await bPage.getByLabel("Password").fill(PASSWORD);
     await bPage.getByRole("button", { name: /sign in|log in|login/i }).click();
-    await bPage.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await bPage.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     await bPage.locator("aside.sidebar nav").getByRole("button", { name: "Nutrition" }).click();
     await bPage.getByText("ALL-CLIENT OVERVIEW").waitFor();
     await bPage.getByText("No members yet.").first().waitFor();
@@ -360,7 +360,7 @@ describe("Coach Nutrition UI (real browser)", () => {
     sql(`UPDATE members SET coach_id = (SELECT c.id FROM coaches c JOIN users u ON u.id = c.user_id WHERE u.email = '${COACH_B}') WHERE id = ${M[1].id};`);
 
     await page.reload();
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     await openNutrition();
     await goWeek("Previous week", PREV);
     assert.equal(await page.locator(`.nutrition-client[data-member-id="${M[1].id}"]`).count(), 0, "Coach A no longer lists the Member");
@@ -374,7 +374,7 @@ describe("Coach Nutrition UI (real browser)", () => {
     await bPage.getByLabel("Email").fill(COACH_B);
     await bPage.getByLabel("Password").fill(PASSWORD);
     await bPage.getByRole("button", { name: /sign in|log in|login/i }).click();
-    await bPage.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await bPage.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     await bPage.locator("aside.sidebar nav").getByRole("button", { name: "Nutrition" }).click();
     await bPage.locator(`.nutrition-client[data-member-id="${M[1].id}"]`).waitFor();
     assert.equal(await bPage.locator(".nutrition-client").count(), 1);
@@ -392,7 +392,7 @@ describe("Coach Nutrition UI (real browser)", () => {
 
   it("401 from the Nutrition API returns to the sign-in screen", async () => {
     await page.reload();
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     await page.route("**/api/nutrition**", (route) => route.fulfill({ status: 401, contentType: "application/json", body: '{"error":"Not authenticated."}' }));
     await page.locator("aside.sidebar nav").getByRole("button", { name: "Nutrition" }).click();
     await page.getByLabel("Email").waitFor();

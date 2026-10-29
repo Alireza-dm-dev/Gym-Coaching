@@ -81,6 +81,8 @@ export const coaches = sqliteTable("coaches", {
    */
   userId: integer("user_id").unique().references(() => users.id, { onDelete: "no action" }),
   name: text("name").notNull(),
+  /** App-relative `/api/photos/<key>` URL of the private R2 object; null = initials. */
+  photoUrl: text("photo_url"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

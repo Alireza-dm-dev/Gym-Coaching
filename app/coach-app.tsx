@@ -17,6 +17,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { MemberCycleSection } from "./coach-cycle-section";
+import { Avatar, AppLogo, AvatarPreview, PhotoActions, PreviewableAvatar, useProfilePhoto, type ProfilePhotoController } from "./profile-identity";
 import { addDaysToDateKey, formatAppTime, getAppDateKey, getAppWeek, getJalaliDateParts, getJalaliMonthGrid, shiftJalaliMonth, formatJalaliDate, localDateTimeToUtcIso, getNextAppDates, type WeekdayCode } from "@/lib/date-time";
 import { DISPLAY_LABELS, attendanceActions, buildDayAttendance, shortJalaliLabel, summarizeDates, summarizeToday, type AttendanceAction, type AttendanceRow, type DaySummary, type DisplayState } from "@/lib/coach-calendar";
 import { buildNutritionOverview, type NutritionMeal, type NutritionMealType } from "@/lib/nutrition-rules";
@@ -51,8 +52,6 @@ type MockMemberOperationalState = {
 
 /** Render-layer view: persisted profile + mock operational state + UI-only fields. */
 type Student = MemberProfile & MockMemberOperationalState & {
-  /** Derived from `name`; never fetched or stored. */
-  initials: string;
   /** Presentation only: avatar gradient colour. */
   accent: string;
 };
@@ -130,16 +129,11 @@ function jalaliLabelForDateKey(dateKey: string): string {
   return formatJalaliDate(localDateTimeToUtcIso(dateKey, "12:00"));
 }
 
-function initialsFor(name: string) {
-  return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase();
-}
-
 /** Compose a persisted profile with derived UI fields and mock operational state. */
 function toStudent(profile: MemberProfile, index: number): Student {
   return {
     ...profile,
     ...(mockOperationalState[profile.id] ?? neutralOperationalState),
-    initials: initialsFor(profile.name),
     accent: accentPalette[index % accentPalette.length],
   };
 }
@@ -164,18 +158,10 @@ function freshnessText(entry: MuscleFreshness[MuscleKey]) {
   return `${entry.daysSince} ${entry.daysSince === 1 ? "day" : "days"} ago`;
 }
 
-function Avatar({ student, large = false, onClick }: { student: Student; large?: boolean; onClick?: () => void }) {
-  const className = large ? "avatar avatar-lg" : "avatar";
-  const content = student.photoUrl ? <img src={student.photoUrl} alt={student.name} /> : student.initials;
-  return onClick ? <button type="button" className={className} style={{ background: `linear-gradient(145deg,${student.accent},#fff)` }} onClick={onClick} aria-label={`Open ${student.name} profile photo`}>{content}</button> : <span className={className} style={{ background: `linear-gradient(145deg,${student.accent},#fff)` }}>{content}</span>;
-}
-
-function AppLogo({ onClick, compact = false }: { onClick: () => void; compact?: boolean }) {
-  return <button type="button" className={compact ? "app-logo app-logo-compact" : "app-logo"} onClick={onClick} aria-label="Open Fit & Mischief logo"><img src="/app-logo.png" alt="Fit & Mischief App" /></button>;
-}
-
-function AccountPhoto({ src, initials, name, onClick }: { src?: string | null; initials: string; name: string; onClick: () => void }) {
-  return <button type="button" className="coach-avatar account-photo" onClick={onClick} aria-label={`Choose ${name} profile photo`}>{src ? <img src={src} alt={name} /> : initials}</button>;
+/** A Member's avatar: photo or derived initials on the accent gradient. `preview` makes it open a view-only photo preview. */
+function StudentAvatar({ student, large = false, preview = false }: { student: Student; large?: boolean; preview?: boolean }) {
+  const common = { name: student.name, photoUrl: student.photoUrl, className: large ? "avatar avatar-lg" : "avatar", style: { background: `linear-gradient(145deg,${student.accent},#fff)` } };
+  return preview ? <PreviewableAvatar {...common} /> : <Avatar {...common} />;
 }
 
 function AttendanceButtons({ actions, onAction }: { actions: AttendanceAction[]; onAction: (kind: AttendanceAction["kind"]) => void }) {
@@ -284,11 +270,11 @@ function CoachDashboard({ students, selected, select, apiFetch, version, store, 
         {data.error ? <div className="empty-agenda" role="alert"><CalendarDays /><strong>Could not load sessions</strong><span>Your clients are still available.</span><button className="soft-button" onClick={data.retry}>Retry</button></div>
           : !data.ready ? <div className="empty-agenda"><CalendarDays /><strong>Loading sessions…</strong></div>
           : rows.length === 0 ? <div className="empty-agenda"><CalendarDays /><strong>No members scheduled.</strong><span>{students.length === 0 ? "Add a client to start scheduling." : "Nobody is expected today."}</span></div>
-          : <div className="schedule-list">{rows.map((row: AttendanceRow) => { const s = memberFor(row.memberId); if (!s) return null; return <div className={`schedule-row ${selected?.id === s.id ? "selected-row" : ""}`} key={row.key} data-member={s.name} data-state={row.state} onClick={() => select(s.id)}><time>{row.time}</time><Avatar student={s} /><div><strong>{s.name}</strong><small>{row.durationMinutes ?? s.defaultDurationMinutes} min · {s.goal}</small></div><div className="attend" onClick={(e) => e.stopPropagation()}><span className={`status status-${row.state}`}>{DISPLAY_LABELS[row.state]}</span><AttendanceButtons actions={attendanceActions(row, todayKey, todayKey)} onAction={(kind) => onAttendance({ memberId: s.id, dateKey: todayKey, sessionId: row.sessionId }, kind)} /></div><ChevronRight /></div>; })}</div>}
+          : <div className="schedule-list">{rows.map((row: AttendanceRow) => { const s = memberFor(row.memberId); if (!s) return null; return <div className={`schedule-row ${selected?.id === s.id ? "selected-row" : ""}`} key={row.key} data-member={s.name} data-state={row.state} onClick={() => select(s.id)}><time>{row.time}</time><StudentAvatar student={s} /><div><strong>{s.name}</strong><small>{row.durationMinutes ?? s.defaultDurationMinutes} min · {s.goal}</small></div><div className="attend" onClick={(e) => e.stopPropagation()}><span className={`status status-${row.state}`}>{DISPLAY_LABELS[row.state]}</span><AttendanceButtons actions={attendanceActions(row, todayKey, todayKey)} onAction={(kind) => onAttendance({ memberId: s.id, dateKey: todayKey, sessionId: row.sessionId }, kind)} /></div><ChevronRight /></div>; })}</div>}
         <button className="text-link" onClick={openCalendar}>View full calendar <ArrowRight /></button>
       </article>
       {selected && <article className="surface session-card">
-        <div className="card-head"><div><span className="eyebrow">SELECTED CLIENT</span><h2>{selected.name}</h2></div><Avatar student={selected} /></div>
+        <div className="card-head"><div><span className="eyebrow">SELECTED CLIENT</span><h2>{selected.name}</h2></div><StudentAvatar student={selected} preview /></div>
         <div className="session-next"><small><CalendarDays /> Usual schedule</small><strong>{selected.preferredDays.join(" · ") || "No preferred days"} · {selected.defaultStartTime}</strong></div>
         <div className="session-next"><small><Target /> Goal</small><strong>{selected.goal}</strong></div>
         <Button className="wide-dark" onClick={logSession}>Log a session <ArrowRight /></Button>
@@ -320,8 +306,8 @@ function Clients({ apiFetch, students, selected, select, add, log, editSchedule,
   return <>
     <Heading eyebrow="CLIENT DIRECTORY" title="Your people." sub={`${students.length} active ${students.length === 1 ? "client" : "clients"}`} action={<Button className="primary-action" onClick={add}><Plus /> Add client</Button>} />
     <section className="clients-grid">
-      <article className="surface directory"><label className="search"><Search /><input placeholder="Search clients" /></label><div>{students.map((s) => <button className={selected.id === s.id ? "selected-client" : ""} key={s.id} onClick={() => select(s.id)}><Avatar student={s} /><span><strong>{s.name}</strong><small>{s.goal}</small></span><b>{s.sessionsLeft}<small>left</small></b><ChevronRight /></button>)}</div></article>
-      <div className="client-detail"><article className="surface profile-card"><div className="person"><Avatar student={selected} large /><div><span className="eyebrow">ACTIVE CLIENT</span><h2>{selected.name}</h2><p>{selected.goal}</p>{!isProfileComplete(selected) && <span className="chip">Profile incomplete</span>}</div></div><div className="action-pair"><Button className="soft-button" onClick={editProfile}><CircleUserRound /> Edit profile</Button><Button className="soft-button" onClick={editSchedule}><CalendarDays /> Edit schedule</Button><Button className="wide-dark fit" onClick={log}><Plus /> Log session</Button></div><div className="profile-stats"><span><strong>{selected.phone ?? NOT_RECORDED}</strong>phone</span><span><strong>{measurement(selected.weightKg, "kg")}</strong>weight</span><span><strong>{measurement(selected.heightCm, "cm")}</strong>height</span></div><div className="profile-stats"><span><strong>{selected.sessionsLeft}</strong>sessions left</span><span><strong>{selected.defaultDurationMinutes}</strong>minutes / session</span><span><strong>{selected.preferredDays.length}</strong>weekly days</span></div></article><MemberCycleSection key={selected.id} memberId={selected.id} apiFetch={apiFetch} /><article className="surface session-notes-card"><div className="card-head"><div><span className="eyebrow">SESSION HISTORY</span><h2>Recent sessions</h2></div><span className="chip">{retained.length} {retained.length === 1 ? "session" : "sessions"}</span></div>{noteHistoryLoading ? <p className="policy-note">Loading session history…</p> : noteHistoryError ? <p className="policy-note" role="alert">{noteHistoryError} <button type="button" className="text-link" onClick={retryNoteHistory}>Retry</button></p> : retained.length === 0 ? <p className="policy-note">No completed sessions with details from the last 30 days.</p> : <div className="session-note-list">{retained.map(({ item }) => <div className="session-note" key={item.id} data-session={item.id}><time>{formatJalaliDate(item.scheduledAt)}{item.replacementForId !== null && <small>Replacement</small>}</time><div>{item.note && <p>{item.note.note}</p>}{item.muscles.length > 0 && <div className="muscle-tags" aria-label="Muscles trained">{item.muscles.map((key) => <span className="muscle-tag" key={key}>{labels[key]}</span>)}</div>}<button type="button" className="text-link edit-muscles" onClick={() => onEditMuscles(item)}>{item.muscles.length > 0 ? "Edit muscles" : "Add muscles"}</button></div></div>)}</div>}</article><BodyMap student={selected} data={bodyMap} selected={muscle} onSelect={setMuscle} /></div>
+      <article className="surface directory"><label className="search"><Search /><input placeholder="Search clients" /></label><div>{students.map((s) => <button className={selected.id === s.id ? "selected-client" : ""} key={s.id} onClick={() => select(s.id)}><StudentAvatar student={s} /><span><strong>{s.name}</strong><small>{s.goal}</small></span><b>{s.sessionsLeft}<small>left</small></b><ChevronRight /></button>)}</div></article>
+      <div className="client-detail"><article className="surface profile-card"><div className="person"><StudentAvatar student={selected} large preview /><div><span className="eyebrow">ACTIVE CLIENT</span><h2>{selected.name}</h2><p>{selected.goal}</p>{!isProfileComplete(selected) && <span className="chip">Profile incomplete</span>}</div></div><div className="action-pair"><Button className="soft-button" onClick={editProfile}><CircleUserRound /> Edit profile</Button><Button className="soft-button" onClick={editSchedule}><CalendarDays /> Edit schedule</Button><Button className="wide-dark fit" onClick={log}><Plus /> Log session</Button></div><div className="profile-stats"><span><strong>{selected.phone ?? NOT_RECORDED}</strong>phone</span><span><strong>{measurement(selected.weightKg, "kg")}</strong>weight</span><span><strong>{measurement(selected.heightCm, "cm")}</strong>height</span></div><div className="profile-stats"><span><strong>{selected.sessionsLeft}</strong>sessions left</span><span><strong>{selected.defaultDurationMinutes}</strong>minutes / session</span><span><strong>{selected.preferredDays.length}</strong>weekly days</span></div></article><MemberCycleSection key={selected.id} memberId={selected.id} apiFetch={apiFetch} /><article className="surface session-notes-card"><div className="card-head"><div><span className="eyebrow">SESSION HISTORY</span><h2>Recent sessions</h2></div><span className="chip">{retained.length} {retained.length === 1 ? "session" : "sessions"}</span></div>{noteHistoryLoading ? <p className="policy-note">Loading session history…</p> : noteHistoryError ? <p className="policy-note" role="alert">{noteHistoryError} <button type="button" className="text-link" onClick={retryNoteHistory}>Retry</button></p> : retained.length === 0 ? <p className="policy-note">No completed sessions with details from the last 30 days.</p> : <div className="session-note-list">{retained.map(({ item }) => <div className="session-note" key={item.id} data-session={item.id}><time>{formatJalaliDate(item.scheduledAt)}{item.replacementForId !== null && <small>Replacement</small>}</time><div>{item.note && <p>{item.note.note}</p>}{item.muscles.length > 0 && <div className="muscle-tags" aria-label="Muscles trained">{item.muscles.map((key) => <span className="muscle-tag" key={key}>{labels[key]}</span>)}</div>}<button type="button" className="text-link edit-muscles" onClick={() => onEditMuscles(item)}>{item.muscles.length > 0 ? "Edit muscles" : "Add muscles"}</button></div></div>)}</div>}</article><BodyMap student={selected} data={bodyMap} selected={muscle} onSelect={setMuscle} /></div>
     </section>
   </>;
 }
@@ -415,7 +401,7 @@ function CalendarView({ students, apiFetch, version, store, onAttendance, editSc
         <div className="card-head"><div><span className="eyebrow">{selectedDateKey < todayKey ? "HISTORY" : selectedDateKey === todayKey ? "TODAY" : "UPCOMING"}</span><h2>{dayLabel}</h2></div>{data.ready && <span className="chip">{rows.length} {entryLabel}</span>}</div>
         {data.error ? <div className="empty-agenda" role="alert"><CalendarDays /><strong>Could not load sessions</strong><span>Your clients are still available.</span><button className="soft-button" onClick={data.retry}>Retry</button></div>
           : data.loading ? <div className="empty-agenda"><CalendarDays /><strong>Loading sessions…</strong></div>
-          : rows.length ? rows.map((row, i) => { const s = memberFor(row.memberId); if (!s) return null; const link = linkText(row); return <div className="agenda-row" key={row.key} data-member={s.name} data-state={row.state}><time>{row.time}<small>{row.durationMinutes ?? s.defaultDurationMinutes} min</small></time><i className={`line line-${i % 3}`} /><Avatar student={s} /><div><strong>{s.name}</strong><small>{link ?? s.goal}</small></div><div className="agenda-actions"><span className={`status status-${row.state}`}>{DISPLAY_LABELS[row.state]}</span><AttendanceButtons actions={attendanceActions(row, selectedDateKey, todayKey)} onAction={(kind) => onAttendance({ memberId: s.id, dateKey: selectedDateKey, sessionId: row.sessionId }, kind)} /></div><button aria-label={`Edit ${s.name} schedule`} onClick={() => editSchedule(s.id)}><MoreHorizontal /></button></div>; })
+          : rows.length ? rows.map((row, i) => { const s = memberFor(row.memberId); if (!s) return null; const link = linkText(row); return <div className="agenda-row" key={row.key} data-member={s.name} data-state={row.state}><time>{row.time}<small>{row.durationMinutes ?? s.defaultDurationMinutes} min</small></time><i className={`line line-${i % 3}`} /><StudentAvatar student={s} /><div><strong>{s.name}</strong><small>{link ?? s.goal}</small></div><div className="agenda-actions"><span className={`status status-${row.state}`}>{DISPLAY_LABELS[row.state]}</span><AttendanceButtons actions={attendanceActions(row, selectedDateKey, todayKey)} onAction={(kind) => onAttendance({ memberId: s.id, dateKey: selectedDateKey, sessionId: row.sessionId }, kind)} /></div><button aria-label={`Edit ${s.name} schedule`} onClick={() => editSchedule(s.id)}><MoreHorizontal /></button></div>; })
           : <div className="empty-agenda"><CalendarDays /><strong>No sessions on this day</strong><span>Select another date or schedule a client.</span></div>}
       </div>
     </article>
@@ -510,7 +496,7 @@ function Nutrition({ apiFetch, students }: { apiFetch: ApiFetch; students: Stude
         <div className="nutrition-client-grid">{visible.map((student) => {
           const data = overview?.members.find((member) => member.memberId === student.id);
           return <button type="button" className={`nutrition-client ${selected?.id === student.id ? "active" : ""}`} key={student.id} data-member-id={student.id} onClick={() => setSelectedId(student.id)}>
-            <Avatar student={student} />
+            <StudentAvatar student={student} />
             <div><strong>{student.name}</strong><small>{data ? data.insight.title : dash}</small><span><i style={{ width: `${data?.consistency.percent ?? 0}%` }} /></span></div>
             <b>{percentText(data?.consistency.percent)}<small>consistent</small></b>
           </button>;
@@ -539,7 +525,12 @@ function Nutrition({ apiFetch, students }: { apiFetch: ApiFetch; students: Stude
   </>;
 }
 
-function SettingsView({ absence, setAbsence }: { absence: boolean; setAbsence: (v: boolean) => void }) {
+type CoachProfile = { id: number; name: string; photoUrl: string | null };
+
+function SettingsView({ absence, setAbsence, coachName, photoUrl, loaded, failed, retry, photo, openPreview }: {
+  absence: boolean; setAbsence: (v: boolean) => void; coachName: string; photoUrl: string | null; loaded: boolean; failed: boolean;
+  retry: () => void; photo: ProfilePhotoController; openPreview: () => void;
+}) {
   const cards = [
     { icon: ShieldCheck, label: "SESSION POLICY", title: "Absence handling", text: "When enabled, a client absence automatically uses one session. You can still override individual cases.", control: true },
     { icon: Bell, label: "REMINDERS", title: "Session nudges", text: "Send a gentle reminder before scheduled sessions and when a plan has two sessions remaining.", control: false },
@@ -547,6 +538,11 @@ function SettingsView({ absence, setAbsence }: { absence: boolean; setAbsence: (
   ];
   return <>
     <Heading eyebrow="COACH SETTINGS" title="Keep your rules clear." sub="Policies apply across your independent coaching space." />
+    <article className="surface profile-card-settings" aria-label="Your profile">
+      <Avatar name={coachName} photoUrl={photoUrl} className="coach-avatar account-photo avatar-lg" label="Open your profile photo" onClick={loaded ? openPreview : undefined} />
+      <div><span className="eyebrow">YOUR PROFILE</span><h2>{loaded ? coachName : "Coach"}</h2><small>Coach</small>{failed && <p className="policy-note" role="alert">Could not load your profile. <button type="button" className="text-link" onClick={retry}>Retry</button></p>}</div>
+      {loaded && <PhotoActions photo={photo} hasPhoto={photoUrl !== null} />}
+    </article>
     <section className="settings-grid">{cards.map((c, i) => { const Icon = c.icon; return <article className="surface setting-card" key={c.title}><span className={`setting-icon setting-${i}`}><Icon /></span><div><span className="eyebrow">{c.label}</span><h2>{c.title}</h2><p>{c.text}</p></div>{i < 2 ? <div className="setting-control"><span><strong>{i ? "Session reminders" : "Count absence as a used session"}</strong><small>{i ? "24 hours before each session" : absence ? "Enabled for new absences" : "Balance stays unchanged"}</small></span><Switch checked={i ? true : absence} onCheckedChange={(v) => { if (!i) setAbsence(v); toast.success("Preference updated"); }} /></div> : null}</article>; })}</section>
   </>;
 }
@@ -581,9 +577,10 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
   const [sessionOpen, setSessionOpen] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
   const [absenceOpen, setAbsenceOpen] = useState(false);
-  const [logoOpen, setLogoOpen] = useState(false);
-  const [profilePhotoOpen, setProfilePhotoOpen] = useState(false);
-  const [coachPhoto, setCoachPhoto] = useState<string | null>(null);
+  const [coachProfile, setCoachProfile] = useState<CoachProfile | null>(null);
+  const [coachProfileFailed, setCoachProfileFailed] = useState(false);
+  const [coachProfileVersion, setCoachProfileVersion] = useState(0);
+  const [profilePreviewOpen, setProfilePreviewOpen] = useState(false);
   const [sessionDateKey, setSessionDateKey] = useState(() => getAppDateKey());
   const [savingSession, setSavingSession] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -653,6 +650,27 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
     })();
     return () => { active = false; };
   }, [fetchMembers, applyMembers]);
+
+  // The Coach's own display identity. Nothing is rendered as a name until the database answers.
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const response = await apiFetch("/api/coaches/me");
+        if (response.status === 401) return; // onUnauthorized already fired.
+        const payload = response.ok ? ((await response.json()) as { coach?: CoachProfile }) : null;
+        if (!active) return;
+        if (payload?.coach) { setCoachProfile(payload.coach); setCoachProfileFailed(false); }
+        else setCoachProfileFailed(true);
+      } catch {
+        if (active) setCoachProfileFailed(true);
+      }
+    })();
+    return () => { active = false; };
+  }, [apiFetch, coachProfileVersion]);
+  const onCoachPhotoUrl = useCallback((photoUrl: string | null) => setCoachProfile((current) => (current ? { ...current, photoUrl } : current)), []);
+  const profilePhoto = useProfilePhoto(apiFetch, onCoachPhotoUrl);
+  const coachName = coachProfile?.name ?? "";
 
   // Real persisted Session+Note history for the Client Profile, replacing
   // the old mock/seed session-note list. One request per selected Member,
@@ -1131,12 +1149,6 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
       setSavingSchedule(false);
     }
   }
-  function chooseProfilePhoto(file?: File) {
-    if (!file) return;
-    const url = URL.createObjectURL(file);
-    setCoachPhoto(url);
-    toast.success("Profile photo updated");
-  }
 
   // No member data is rendered until the database responds; there is no
   // fabricated roster to fall back on.
@@ -1144,7 +1156,7 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
     const failed = loadState === "error";
     return <div className="app-shell">
       <div className="app-main">
-        <header className="topbar"><div className="mobile-brand"><AppLogo compact onClick={() => setLogoOpen(true)} /></div></header>
+        <header className="topbar"><div className="mobile-brand"><AppLogo compact /></div></header>
         <main className="content">
           <Heading
             eyebrow="MEMBERS"
@@ -1167,16 +1179,15 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
     : <><Heading eyebrow="CLIENT DIRECTORY" title="No members yet." sub="Add your first client to start scheduling sessions." action={<Button className="primary-action" onClick={openAddClient}><Plus /> Add client</Button>} /><article className="surface empty-members"><div className="empty-agenda"><UsersRound /><strong>No members yet.</strong><span>Clients you add will appear here.</span></div></article></>;
   else if (view === "calendar") content = <CalendarView students={students} apiFetch={apiFetch} version={calendarVersion} store={sessionsStore} onAttendance={beginAttendance} editSchedule={openScheduleEditor} />;
   else if (view === "nutrition") content = <Nutrition apiFetch={apiFetch} students={students} />;
-  else if (view === "settings") content = <SettingsView absence={absence} setAbsence={setAbsence} />;
+  else if (view === "settings") content = <SettingsView absence={absence} setAbsence={setAbsence} coachName={coachName} photoUrl={coachProfile?.photoUrl ?? null} loaded={coachProfile !== null} failed={coachProfileFailed} retry={() => setCoachProfileVersion((v) => v + 1)} photo={profilePhoto} openPreview={() => setProfilePreviewOpen(true)} />;
   else content = <CoachDashboard students={students} selected={selected} select={setSelectedId} apiFetch={apiFetch} version={calendarVersion} store={sessionsStore} onAttendance={beginAttendance} logSession={() => openSession()} addClient={openAddClient} openCalendar={() => setView("calendar")} muscle={muscle} setMuscle={setMuscle} bodyMap={bodyMap} />;
 
   return <div className="app-shell">
-    <aside className="sidebar"><div className="brand"><AppLogo onClick={() => setLogoOpen(true)} /><span>FIT & MISCHIEF</span></div><div className="workspace"><AccountPhoto src={coachPhoto} initials="JL" name="Jordan Lee" onClick={() => setProfilePhotoOpen(true)} /><div><strong>Jordan Lee</strong><small>Independent coach</small></div><ChevronDown /></div><nav>{nav.map(([id, text, Icon]) => <button key={id} className={view === id ? "nav-active" : ""} onClick={() => setView(id)}><Icon /><span>{text}</span>{id === "clients" && <b>{students.length}</b>}</button>)}</nav><footer><button><MessageCircle />Support</button><button onClick={() => onLogout()}><LogOut />Sign out</button></footer></aside>
-    <div className="app-main"><header className="topbar"><div className="mobile-brand"><AppLogo compact onClick={() => setLogoOpen(true)} /></div><div className="top-actions"><button aria-label="Notifications"><Bell /><i /></button><AccountPhoto src={coachPhoto} initials="JL" name="Jordan Lee" onClick={() => setProfilePhotoOpen(true)} /></div></header><main className="content">{content}</main></div>
+    <aside className="sidebar"><div className="brand"><AppLogo /><span>FIT & MISCHIEF</span></div><div className="workspace"><Avatar name={coachName} photoUrl={coachProfile?.photoUrl ?? null} className="coach-avatar account-photo" label="Open your profile photo" onClick={coachProfile ? () => setProfilePreviewOpen(true) : undefined} /><div><strong>{coachProfile?.name ?? (coachProfileFailed ? "Coach account" : "Loading…")}</strong><small>Coach</small></div><ChevronDown /></div><nav>{nav.map(([id, text, Icon]) => <button key={id} className={view === id ? "nav-active" : ""} onClick={() => setView(id)}><Icon /><span>{text}</span>{id === "clients" && <b>{students.length}</b>}</button>)}</nav><footer><button><MessageCircle />Support</button><button onClick={() => onLogout()}><LogOut />Sign out</button></footer></aside>
+    <div className="app-main"><header className="topbar"><div className="mobile-brand"><AppLogo compact /></div><div className="top-actions"><button aria-label="Notifications"><Bell /><i /></button><Avatar name={coachName} photoUrl={coachProfile?.photoUrl ?? null} className="coach-avatar account-photo" label="Open your profile photo" onClick={coachProfile ? () => setProfilePreviewOpen(true) : undefined} /></div></header><main className="content">{content}</main></div>
     <nav className="mobile-nav">{nav.map(([id, text, Icon]) => <button key={id} className={view === id ? "nav-active" : ""} onClick={() => setView(id)}><Icon /><span>{text}</span></button>)}</nav>
 
-    <Dialog open={logoOpen} onOpenChange={setLogoOpen}><DialogContent className="logo-dialog"><DialogHeader><DialogTitle className="visually-hidden">Fit & Mischief App logo</DialogTitle><DialogDescription className="visually-hidden">Expanded app logo</DialogDescription></DialogHeader><img src="/app-logo.png" alt="Fit & Mischief App — Naughty & Strong Together" /></DialogContent></Dialog>
-    <Dialog open={profilePhotoOpen} onOpenChange={setProfilePhotoOpen}><DialogContent className="app-dialog photo-dialog"><DialogHeader><DialogTitle>Profile photo</DialogTitle><DialogDescription>Choose a photo for Jordan Lee.</DialogDescription></DialogHeader><div className="photo-preview">{coachPhoto ? <img src={coachPhoto} alt="Jordan Lee" /> : <span>JL</span>}</div><label className="photo-upload"><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => chooseProfilePhoto(e.target.files?.[0])} /><span><Plus /> Choose image</span><small>PNG, JPG or WebP</small></label><DialogFooter><Button className="wide-dark" onClick={() => setProfilePhotoOpen(false)}>Done</Button></DialogFooter></DialogContent></Dialog>
+    {coachProfile && <AvatarPreview open={profilePreviewOpen} onOpenChange={setProfilePreviewOpen} name={coachProfile.name} photoUrl={coachProfile.photoUrl} photo={profilePhoto} />}
     <Dialog open={clientOpen} onOpenChange={setClientOpen}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>Add a new client</DialogTitle><DialogDescription>Contact details, measurements and preferred rhythm.</DialogDescription></DialogHeader><form className="dialog-form" onSubmit={addClient}><label>Full name<Input name="name" placeholder="e.g. Sam Taylor" required /></label><label>Phone number<Input name="phone" type="tel" placeholder="e.g. +15550001111" required /></label><div className="form-grid"><label>Weight (kg)<Input name="weight" type="number" step="0.1" min="1" placeholder="72.5" required /></label><label>Height (cm)<Input name="height" type="number" step="1" min="1" placeholder="178" required /></label></div><label>Primary goal<Input name="goal" placeholder="Strength, mobility, endurance…" required /></label><div className="form-grid"><label>Preferred time<Input name="time" type="time" defaultValue="10:00" required /></label><label>Session duration<select name="duration" defaultValue="60"><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="50">50 minutes</option><option value="60">60 minutes</option><option value="75">75 minutes</option><option value="90">90 minutes</option></select></label></div><label>Preferred training days</label><div className="day-picker">{weekDays.map((day) => <button type="button" className={clientDays.includes(day) ? "selected-day" : ""} key={day} onClick={() => setClientDays((all) => all.includes(day) ? all.filter((d) => d !== day) : [...all, day])}>{day}</button>)}</div>{clientError && <p className="policy-note" role="alert">{clientError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setClientOpen(false)}>Cancel</Button><Button className="wide-dark" type="submit" disabled={!clientDays.length || creatingClient}>{creatingClient ? "Creating…" : "Create client"}</Button></DialogFooter></form></DialogContent></Dialog>
     {selected && <>
     <Dialog open={sessionOpen} onOpenChange={(open) => { if (!savingSession) setSessionOpen(open); }}><DialogContent className="app-dialog"><DialogHeader><DialogTitle>{sessionSource === "attendance" ? "Complete this session" : "Log session"}</DialogTitle><DialogDescription>Confirm the completed session for {selected.name} on {jalaliLabelForDateKey(sessionDateKey)}.</DialogDescription></DialogHeader>{(() => { const detailWritable = isDateKeyInDetailWindow(sessionDateKey, getAppDateKey()); const retrying = resolvedSessionId !== null; return <form className="dialog-form" onSubmit={logSession}><label>Session note (optional)<Textarea value={sessionNoteText} disabled={!detailWritable || noteSaved} onChange={(e) => setSessionNoteText(e.target.value)} placeholder="Intensity, limitations, progress or next-session cues…" /></label><div className="muscle-field"><span className="muscle-field-label">Muscles trained (optional)</span><MusclePicker value={sessionMuscleSelection} onChange={setSessionMuscleSelection} disabled={!detailWritable || musclesSaved || savingSession} /></div>{!detailWritable && <p className="policy-note">Session details are only editable for 30 days.</p>}{sessionError && <p className="policy-note" role="alert">{sessionError}</p>}<DialogFooter><Button type="button" variant="ghost" onClick={() => setSessionOpen(false)} disabled={savingSession}>{retrying ? "Close" : "Cancel"}</Button><Button className="wide-dark" type="submit" disabled={savingSession}>{savingSession ? "Saving…" : retrying ? "Retry" : sessionSource === "attendance" ? "Save & confirm attendance" : "Save session"}</Button></DialogFooter></form>; })()}</DialogContent></Dialog>

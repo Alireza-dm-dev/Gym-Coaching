@@ -9,6 +9,7 @@ import type { AuthUser } from "@/components/auth/login-form";
 import {
   addDaysToDateKey, formatAppTime, formatJalaliDate, getAppDateKey, getAppWeek, localDateTimeToUtcIso,
 } from "@/lib/date-time";
+import { Avatar, AppLogo, AvatarPreview, useProfilePhoto } from "./profile-identity";
 
 type View = "today" | "sessions" | "cycle" | "meals" | "profile";
 
@@ -69,10 +70,6 @@ const NOT_RECORDED = "Not recorded";
 /** Renders a persisted measurement, or the empty state when it is null. */
 function measurement(value: number | null, unit: string) {
   return value === null ? NOT_RECORDED : `${String(value)} ${unit}`;
-}
-
-function initialsFor(name: string) {
-  return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase();
 }
 
 /**
@@ -458,15 +455,13 @@ function CycleView({ apiFetch }: { apiFetch: (input: RequestInfo | URL, init?: R
   );
 }
 
-function ProfileView({ profile, email }: { profile: MemberProfile; email: string }) {
+function ProfileView({ profile, email, openPreview }: { profile: MemberProfile; email: string; openPreview: () => void }) {
   return (
     <>
       <Heading eyebrow="PROFILE" title={profile.name} sub={email} />
       <article className="surface profile-card" style={{ gridTemplateColumns: "1fr", padding: 24 }}>
         <div className="person">
-          <span className="avatar avatar-lg">
-            {profile.photoUrl ? <img src={profile.photoUrl} alt={profile.name} /> : initialsFor(profile.name)}
-          </span>
+          <Avatar name={profile.name} photoUrl={profile.photoUrl} className="avatar avatar-lg" label="Open your profile photo" onClick={openPreview} />
           <div><span className="eyebrow">MEMBER</span><h2>{profile.name}</h2><p>{profile.goal}</p></div>
         </div>
         <div className="profile-stats">
@@ -796,6 +791,10 @@ export default function MemberApp({
   const [profileVersion, setProfileVersion] = useState(0);
   const [sessionsState, setSessionsState] = useState<SessionsState>({ status: "loading" });
   const [sessionsVersion, setSessionsVersion] = useState(0);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const onPhotoUrl = useCallback((photoUrl: string | null) => setProfileState((current) => (
+    current.status === "ready" ? { status: "ready", profile: { ...current.profile, photoUrl } } : current)), []);
+  const profilePhoto = useProfilePhoto(apiFetch, onPhotoUrl);
 
   // Identity is resolved entirely from the authenticated session; never from
   // user.id, email or a guessed id. `/api/members` is never called here.
@@ -895,7 +894,7 @@ export default function MemberApp({
   } else if (view === "meals") {
     content = <MealLogView apiFetch={apiFetch} />;
   } else if (view === "profile") {
-    content = <ProfileView profile={profile} email={user.email} />;
+    content = <ProfileView profile={profile} email={user.email} openPreview={() => setPreviewOpen(true)} />;
   } else {
     content = <TodayView profile={profile} sessionsState={sessionsState} />;
   }
@@ -904,11 +903,11 @@ export default function MemberApp({
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="app-logo"><img src="/app-logo.png" alt="Fit & Mischief App" /></span>
+          <AppLogo />
           <span>FIT &amp; MISCHIEF</span>
         </div>
         <div className="workspace">
-          <span className="coach-avatar">{initialsFor(profile.name)}</span>
+          <Avatar name={profile.name} photoUrl={profile.photoUrl} className="coach-avatar account-photo" label="Open your profile photo" onClick={() => setPreviewOpen(true)} />
           <div><strong>{profile.name}</strong><small>Member</small></div>
         </div>
         <nav>
@@ -923,11 +922,12 @@ export default function MemberApp({
       <div className="app-main">
         <header className="topbar">
           <div className="mobile-brand">
-            <span className="app-logo app-logo-compact"><img src="/app-logo.png" alt="Fit & Mischief App" /></span>
+            <AppLogo compact />
           </div>
         </header>
         <main className="content">{content}</main>
       </div>
+      <AvatarPreview open={previewOpen} onOpenChange={setPreviewOpen} name={profile.name} photoUrl={profile.photoUrl} photo={profilePhoto} />
       <nav className="mobile-nav">
         {memberNav.map(([id, label, Icon]) => (
           <button key={id} className={view === id ? "nav-active" : ""} onClick={() => setView(id)}>

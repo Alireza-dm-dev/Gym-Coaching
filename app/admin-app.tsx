@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import type { AuthUser } from "@/components/auth/login-form";
+import { AppLogo } from "./profile-identity";
 
 type View = "overview" | "coaches" | "members";
 type ApiFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -603,7 +604,7 @@ export default function AdminApp({ user, onLogout, onUnauthorized }: { user: Aut
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="app-logo"><img src="/app-logo.png" alt="Fit & Mischief App" /></span>
+          <AppLogo />
           <span>FIT &amp; MISCHIEF</span>
         </div>
         <div className="workspace">
@@ -619,7 +620,7 @@ export default function AdminApp({ user, onLogout, onUnauthorized }: { user: Aut
       </aside>
       <div className="app-main">
         <header className="topbar">
-          <div className="mobile-brand"><span className="app-logo app-logo-compact"><img src="/app-logo.png" alt="Fit & Mischief App" /></span></div>
+          <div className="mobile-brand"><AppLogo compact /></div>
           <div className="top-actions"><button aria-label="Sign out" onClick={() => void onLogout()}><LogOut /></button></div>
         </header>
         <main className="content">

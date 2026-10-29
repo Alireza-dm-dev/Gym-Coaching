@@ -293,7 +293,7 @@ describe("Super Admin UI (real browser)", () => {
     await page.getByLabel("Email").waitFor();
     assert.equal(await page.locator("article.admin-row").count(), 0);
     await uiLogin("coach1@example.test", FIXTURES["coach1@example.test"]);
-    await page.locator("aside.sidebar").getByText("Independent coach").waitFor();
+    await page.locator("aside.sidebar").getByText("Coach", { exact: true }).waitFor();
     assert.equal(await page.locator(".admin-stat, .admin-row").count(), 0);
     await page.getByRole("button", { name: /sign out/i }).first().click();
     await uiLogin("member1@example.test", FIXTURES["member1@example.test"]);
@@ -307,7 +307,8 @@ describe("Super Admin UI (real browser)", () => {
   it("network audit: only account-management endpoints; no cycles, sessions, notes or muscles", () => {
     const allowed = [/^(GET|POST) \/api\/auth\/(me|login|logout)$/, /^(GET|POST) \/api\/admin\/(coaches|members)$/,
       /^POST \/api\/admin\/members\/\d+\/account$/, /^PATCH \/api\/admin\/members\/\d+\/assignment$/,
-      /^PATCH \/api\/admin\/users\/\d+\/(status|credentials)$/, /^POST \/api\/members$/];
+      /^PATCH \/api\/admin\/users\/\d+\/(status|credentials)$/, /^POST \/api\/members$/,
+      /^GET \/api\/coaches\/me$/]; // the brief Coach login loads its own profile
     const adminPhase = requests; // includes the brief Coach/Member logins, which are the only extra calls
     const offending = adminPhase.filter((r) => !allowed.some((re) => re.test(r)) && !/^GET \/api\/(members|sessions|members\/me)/.test(r));
     assert.deepEqual(offending, []);

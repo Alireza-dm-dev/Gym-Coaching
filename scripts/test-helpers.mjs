@@ -16,7 +16,7 @@
  */
 import { execFileSync, spawn } from "node:child_process";
 import http from "node:http";
-import { closeSync, existsSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -178,11 +178,11 @@ function groupAlive(pid) {
  * readiness probe is read-only: an unauthenticated-token lookup through
  * `/api/auth/me`, which exercises routing and D1 and answers 401.
  */
-export async function startWorker(port, { readyTimeoutMs = 20_000 } = {}) {
+export async function startWorker(port, { readyTimeoutMs = 20_000, config = "dist/server/wrangler.json" } = {}) {
   const base = `http://127.0.0.1:${port}`;
   const logPath = join(tmpdir(), `gym-test-worker-${port}-${process.pid}.log`);
   const fd = openSync(logPath, "w");
-  const child = spawn(process.execPath, [...WRANGLER, "dev", "--config", "dist/server/wrangler.json", "--local",
+  const child = spawn(process.execPath, [...WRANGLER, "dev", "--config", config, "--local",
     "--persist-to", ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0"],
     { stdio: ["ignore", fd, fd], detached: true });
   closeSync(fd);
@@ -267,4 +267,30 @@ export function resolveChromium(chromium) {
   const found = [...CHROMIUM_CANDIDATES, chromium.executablePath()].find((path) => path && existsSync(path));
   if (!found) throw new Error("No Chromium/Chrome found. Set CHROMIUM_PATH to a Chromium/Chrome executable.");
   return found;
+}
+
+// ---- Local R2 (Miniflare state) ---------------------------------------------
+const BUCKET_NAME = "site-creator-r2";
+function r2Dbs() {
+  const root = ".wrangler/state/v3/r2";
+  if (!existsSync(root)) return [];
+  const found = [];
+  const walk = (dir) => { for (const e of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, e.name); if (e.isDirectory()) walk(p); else if (p.endsWith(".sqlite")) found.push(p); } };
+  walk(root);
+  return found;
+}
+/** Every `profiles/` object currently in the local bucket. */
+export function r2Keys() {
+  const keys = [];
+  for (const db of r2Dbs()) {
+    let out;
+    try { out = execFileSync("sqlite3", ["-readonly", "-json", db, "SELECT key FROM _mf_objects WHERE key LIKE 'profiles/%'"], { encoding: "utf8", timeout: 15_000, stdio: ["ignore", "pipe", "ignore"] }); }
+    catch { continue; } // not an object-metadata database
+    if (out.trim()) keys.push(...JSON.parse(out).map((r) => r.key));
+  }
+  return keys.sort();
+}
+export function deleteR2Object(key) {
+  execFileSync(process.execPath, [...WRANGLER, "r2", "object", "delete", `${BUCKET_NAME}/${key}`, "--local", "--persist-to", ".wrangler/state", "--config", "dist/server/wrangler.json"],
+    { stdio: "ignore", timeout: 30_000, killSignal: "SIGKILL" });
 }
