@@ -3,8 +3,8 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Apple, ArrowRight, Bell, CalendarDays, Check, ChevronDown,
-  ChevronLeft, ChevronRight, CircleUserRound, Dumbbell, LayoutDashboard,
-  Leaf, LogOut, MessageCircle, MoreHorizontal, Plus, Search, Settings,
+  ChevronLeft, ChevronRight, CircleUserRound, LayoutDashboard,
+  LogOut, MessageCircle, MoreHorizontal, Plus, Search, Settings,
   ShieldCheck, Sparkles, Target, UsersRound, Utensils, X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -17,8 +17,9 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { Toaster } from "@/components/ui/sonner";
 import { MemberCycleSection } from "./coach-cycle-section";
-import { getAppDateKey, getAppWeek, getJalaliDateParts, getJalaliMonthGrid, shiftJalaliMonth, formatJalaliDate, localDateTimeToUtcIso, getNextAppDates, type WeekdayCode } from "@/lib/date-time";
+import { addDaysToDateKey, formatAppTime, getAppDateKey, getAppWeek, getJalaliDateParts, getJalaliMonthGrid, shiftJalaliMonth, formatJalaliDate, localDateTimeToUtcIso, getNextAppDates, type WeekdayCode } from "@/lib/date-time";
 import { DISPLAY_LABELS, attendanceActions, buildDayAttendance, shortJalaliLabel, summarizeDates, summarizeToday, type AttendanceAction, type AttendanceRow, type DaySummary, type DisplayState } from "@/lib/coach-calendar";
+import { buildNutritionOverview, type NutritionMeal, type NutritionMealType } from "@/lib/nutrition-rules";
 import { isDateKeyInDetailWindow } from "@/lib/session-detail-window";
 import { buildMuscleFreshness, freshnessBucket, type MuscleFreshness } from "@/lib/muscle-freshness";
 import { newSessionsStoreValue, useCoachSessionsRanges, type SessionsStore } from "./use-coach-sessions-ranges";
@@ -54,10 +55,6 @@ type Student = MemberProfile & MockMemberOperationalState & {
   initials: string;
   /** Presentation only: avatar gradient colour. */
   accent: string;
-};
-type Meal = {
-  id: number; owner: string; day: string; type: string; time: string; description: string;
-  protein: boolean; produce: boolean; water: number;
 };
 /** Only the fields the manual "Log session" discovery needs from `GET /api/sessions` rows. */
 type PersistedSession = { id: number; status: string; replacementForId: number | null };
@@ -148,21 +145,6 @@ function toStudent(profile: MemberProfile, index: number): Student {
 }
 
 const weekDays = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
-
-const initialMeals: Meal[] = [
-  { id: 1, owner: "Alex Morgan", day: "Sat 14", type: "Breakfast", time: "07:20", description: "Greek yogurt, berries, oats and almonds", protein: true, produce: true, water: 2 },
-  { id: 2, owner: "Alex Morgan", day: "Sun 15", type: "Lunch", time: "12:45", description: "Chicken bowl with rice, greens and avocado", protein: true, produce: true, water: 3 },
-  { id: 3, owner: "Alex Morgan", day: "Tue 17", type: "Snack", time: "16:10", description: "Greek yogurt, banana and almonds", protein: true, produce: true, water: 1 },
-  { id: 4, owner: "Alex Morgan", day: "Thu 19", type: "Breakfast", time: "07:35", description: "Greek yogurt, berries and oats", protein: true, produce: true, water: 2 },
-  { id: 5, owner: "Maya Chen", day: "Sat 14", type: "Breakfast", time: "08:10", description: "Toast, banana and coffee", protein: false, produce: true, water: 1 },
-  { id: 6, owner: "Maya Chen", day: "Mon 16", type: "Snack", time: "15:40", description: "Banana and coffee", protein: false, produce: true, water: 1 },
-  { id: 7, owner: "Maya Chen", day: "Wed 18", type: "Dinner", time: "20:15", description: "Salmon, potatoes and green beans", protein: true, produce: true, water: 2 },
-  { id: 8, owner: "Daniel Reed", day: "Sun 15", type: "Lunch", time: "13:05", description: "Tuna sandwich and side salad", protein: true, produce: true, water: 2 },
-  { id: 9, owner: "Daniel Reed", day: "Tue 17", type: "Dinner", time: "19:50", description: "Chicken, rice and roasted vegetables", protein: true, produce: true, water: 3 },
-  { id: 10, owner: "Daniel Reed", day: "Thu 19", type: "Snack", time: "16:20", description: "Protein shake and apple", protein: true, produce: true, water: 2 },
-  { id: 11, owner: "Nina Patel", day: "Mon 16", type: "Lunch", time: "12:30", description: "Pasta with tomato sauce", protein: false, produce: true, water: 1 },
-  { id: 12, owner: "Nina Patel", day: "Fri 20", type: "Snack", time: "17:15", description: "Crackers and coffee", protein: false, produce: false, water: 1 },
-];
 
 const coachNav = [
   ["today", "Today", LayoutDashboard], ["clients", "Clients", UsersRound],
@@ -440,29 +422,120 @@ function CalendarView({ students, apiFetch, version, store, onAttendance, editSc
   </>;
 }
 
-const nutritionSignals = [
-  { name: "Alex Morgan", consistency: 86, protein: 91, hydration: 72, note: "Strong protein coverage · hydration needs attention" },
-  { name: "Maya Chen", consistency: 71, protein: 54, hydration: 61, note: "Add protein to breakfast and post-session meals" },
-  { name: "Daniel Reed", consistency: 79, protein: 82, hydration: 78, note: "Balanced week · keep evening hydration steady" },
-  { name: "Nina Patel", consistency: 43, protein: 67, hydration: 48, note: "Three missing days · follow up before next session" },
-];
+const MEAL_LABELS: Record<NutritionMealType, string> = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner", snack: "Snack" };
 
-function Nutrition({ meals, students, selected, select }: { meals: Meal[]; students: Student[]; selected: Student; select: (id: number) => void }) {
-  const visibleMeals = meals.filter((m) => m.owner === selected.name);
-  const signal = nutritionSignals.find((item) => item.name === selected.name) ?? nutritionSignals[0];
-  const repetition: Record<string, { title: string; text: string }> = {
-    "Alex Morgan": { title: "Greek yogurt appears 3 times", text: "A useful protein anchor, but rotate one serving with eggs or cottage cheese for more variety." },
-    "Maya Chen": { title: "Banana and coffee repeat twice", text: "The pattern is low in protein. Pair the next snack with yogurt, milk or a handful of nuts." },
-    "Daniel Reed": { title: "Chicken and tuna lead the week", text: "Protein variety is reasonable. Add one plant-based protein meal next week." },
-    "Nina Patel": { title: "Coffee appears in every entry", text: "Food logging is incomplete and hydration is low. Check whether coffee is replacing water or a full snack." },
-  };
-  const repeat = repetition[selected.name] ?? repetition["Alex Morgan"];
+/** Read-only Coach Nutrition: one range request per visible Tehran week, everything else derived from it. */
+function Nutrition({ apiFetch, students }: { apiFetch: ApiFetch; students: Student[] }) {
+  // Nutrition owns its selection: it starts empty and is independent of the Clients page's selection.
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [query, setQuery] = useState("");
+  const [anchorKey, setAnchorKey] = useState(() => getAppDateKey());
+  const [version, setVersion] = useState(0);
+  // Visited weeks by "from|to"; lives only as long as the view, so reopening Nutrition refetches.
+  const [cache, setCache] = useState<Record<string, NutritionMeal[]>>({});
+  const [failed, setFailed] = useState<{ key: string; forbidden: boolean } | null>(null);
+
+  const days = getAppWeek(new Date(localDateTimeToUtcIso(anchorKey, "12:00")));
+  const week = { from: days[0].dateKey, to: days[6].dateKey };
+  const key = `${week.from}|${week.to}`;
+  const cached = key in cache;
+  const todayKey = getAppDateKey();
+
+  useEffect(() => {
+    if (cached) return;
+    let active = true;
+    void (async () => {
+      try {
+        const response = await apiFetch(`/api/nutrition?from=${week.from}&to=${week.to}`);
+        if (response.status === 401) return; // onUnauthorized already fired.
+        if (!response.ok) {
+          if (active) setFailed({ key, forbidden: response.status === 403 });
+          return;
+        }
+        const payload = (await response.json()) as { meals?: unknown };
+        if (!Array.isArray(payload.meals)) {
+          if (active) setFailed({ key, forbidden: false });
+          return;
+        }
+        setCache((current) => ({ ...current, [key]: payload.meals as NutritionMeal[] }));
+      } catch {
+        if (active) setFailed({ key, forbidden: false });
+      }
+    })();
+    return () => { active = false; };
+  }, [apiFetch, cached, key, week.from, week.to, version]);
+
+  const meals = cache[key];
+  const failure = failed?.key === key && !meals ? failed : null;
+  const overview = useMemo(
+    () => (meals ? buildNutritionOverview(students.map((student) => student.id), meals, week, todayKey) : null),
+    [meals, students, week.from, week.to, todayKey] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  // A Member who is no longer on the roster (e.g. reassigned) simply has no detail.
+  const selected = students.find((student) => student.id === selectedId) ?? null;
+  const selectedData = overview?.members.find((member) => member.memberId === selected?.id) ?? null;
+  const visible = students.filter((student) => student.name.toLowerCase().includes(query.trim().toLowerCase()));
+  const goToWeek = (delta: number) => setAnchorKey(addDaysToDateKey(anchorKey, delta * 7));
+  const dash = "—";
+  const percentText = (percent: number | null | undefined) => (percent === null || percent === undefined ? dash : `${percent}%`);
+
+  const byDay = new Map<string, NutritionMeal[]>();
+  for (const meal of selectedData?.meals ?? []) {
+    const dayKey = getAppDateKey(new Date(meal.loggedAt));
+    byDay.set(dayKey, [...(byDay.get(dayKey) ?? []), meal]);
+  }
+  for (const list of byDay.values()) list.sort((a, b) => a.loggedAt.localeCompare(b.loggedAt) || a.id - b.id);
+  const weekEntryCount = days.reduce((total, day) => total + (byDay.get(day.dateKey)?.length ?? 0), 0);
+
   return <>
-    <Heading eyebrow="NUTRITION LOG" title="Your clients’ nutrition." sub="Every student’s weekly pattern and latest food entries in one view." />
-    <article className="surface nutrition-overview"><div className="card-head"><div><span className="eyebrow">ALL-CLIENT OVERVIEW</span><h2>Select a client</h2></div><span className="chip">{students.length} clients</span></div><div className="nutrition-client-grid">{students.map((student) => { const itemSignal = nutritionSignals.find((item) => item.name === student.name) ?? nutritionSignals[0]; return <button className={`nutrition-client ${selected.id === student.id ? "active" : ""}`} key={student.id} onClick={() => select(student.id)}><Avatar student={student} /><div><strong>{student.name}</strong><small>{itemSignal.note}</small><span><i style={{ width: `${itemSignal.consistency}%` }} /></span></div><b>{itemSignal.consistency}%<small>consistent</small></b></button>; })}</div></article>
-    <section className="nutrition-grid"><article className="metric gold nutrition-score"><span>WEEKLY CONSISTENCY · {selected.name.toUpperCase()}</span><strong>{signal.consistency}<em>%</em></strong><small>{visibleMeals.length} food entries logged this week</small><MiniWave /></article><article className="surface nutrition-summary"><div className="card-head"><div><span className="eyebrow">RULE-BASED INSIGHT · {selected.name.toUpperCase()}</span><h2>{signal.note.split(" · ")[0]}.</h2></div><Sparkles /></div><p>{signal.note}. Use this pattern when planning the client’s next training session.</p><div className="bars">{[["Protein coverage", signal.protein], ["Produce variety", Math.min(92, signal.consistency + 5)], ["Hydration", signal.hydration]].map(([name, n]) => <span key={String(name)}><i>{name}</i><b><em style={{ width: `${n}%` }} /></b><strong>{n}%</strong></span>)}</div></article></section>
-    <article className="surface repeat-insight"><Sparkles /><div><span className="eyebrow">REPETITIVE CONSUMPTION</span><h3>{repeat.title}</h3><p>{repeat.text}</p></div></article>
-    <article className="surface meal-section"><div className="card-head"><div><span className="eyebrow">THIS WEEK</span><h2>Client food activity</h2></div><span className="chip">{selected.name} <ChevronDown /></span></div><div className="meal-grid">{visibleMeals.map((m) => <div className="meal" key={m.id}><span><Utensils /></span><div><small>{m.day} · {m.type} · {m.time}</small><h3>{m.description}</h3><small>{m.owner}</small><div className="meal-tags">{m.protein && <i><Dumbbell /> Protein</i>}{m.produce && <i><Leaf /> Produce</i>}<i>{m.water} glasses</i></div></div></div>)}</div></article>
+    <Heading eyebrow="NUTRITION LOG" title="Your clients’ nutrition." sub="Every client’s weekly logging pattern and food entries in one view." />
+    <div className="nutrition-week-nav">
+      <Button type="button" variant="outline" aria-label="Previous week" onClick={() => goToWeek(-1)}><ChevronLeft /></Button>
+      <strong data-testid="nutrition-week">{days[0].jalaliDay} {days[0].jalaliMonthName} – {days[6].jalaliDay} {days[6].jalaliMonthName}</strong>
+      <Button type="button" variant="outline" aria-label="Next week" onClick={() => goToWeek(1)}><ChevronRight /></Button>
+      <Button type="button" variant="outline" disabled={todayKey >= week.from && todayKey <= week.to} onClick={() => setAnchorKey(todayKey)}>Current week</Button>
+    </div>
+    <article className="surface nutrition-overview" data-overview>
+      <div className="card-head"><div><span className="eyebrow">ALL-CLIENT OVERVIEW</span><h2>{selected ? "Selected client below" : "Select a client"}</h2></div><span className="chip">{students.length} {students.length === 1 ? "client" : "clients"}</span></div>
+      {students.length === 0 ? <div className="empty-agenda"><Apple /><strong>No members yet.</strong><span>Nutrition appears once you have clients.</span></div> : <>
+        {!meals && !failure && <p className="policy-note" role="status">Loading nutrition activity…</p>}
+        {failure && <p className="policy-note" role="alert">{failure.forbidden ? "You don’t have access to Nutrition." : "Could not load nutrition activity."} {!failure.forbidden && <button type="button" className="text-link" onClick={() => { setFailed(null); setVersion((value) => value + 1); }}>Retry</button>}</p>}
+        <div className="nutrition-metrics">
+          <div className="nutrition-metric" data-metric="logged"><span>LOGGED THIS WEEK</span><strong>{overview ? `${overview.loggedMembers} of ${overview.totalMembers}` : dash}</strong></div>
+          <div className="nutrition-metric" data-metric="entries"><span>MEALS · SNACKS</span><strong>{overview ? `${overview.meals} · ${overview.snacks}` : dash}</strong></div>
+          <div className="nutrition-metric" data-metric="average"><span>AVERAGE CONSISTENCY</span><strong>{percentText(overview?.averagePercent)}</strong></div>
+          <div className="nutrition-metric" data-metric="followup"><span>NEEDS FOLLOW-UP</span><strong>{overview ? overview.needsFollowUp : dash}</strong></div>
+        </div>
+        <Input className="nutrition-search" type="search" aria-label="Search clients" placeholder="Search clients" value={query} onChange={(event) => setQuery(event.target.value)} />
+        <div className="nutrition-client-grid">{visible.map((student) => {
+          const data = overview?.members.find((member) => member.memberId === student.id);
+          return <button type="button" className={`nutrition-client ${selected?.id === student.id ? "active" : ""}`} key={student.id} data-member-id={student.id} onClick={() => setSelectedId(student.id)}>
+            <Avatar student={student} />
+            <div><strong>{student.name}</strong><small>{data ? data.insight.title : dash}</small><span><i style={{ width: `${data?.consistency.percent ?? 0}%` }} /></span></div>
+            <b>{percentText(data?.consistency.percent)}<small>consistent</small></b>
+          </button>;
+        })}</div>
+        {visible.length === 0 && <p className="policy-note">No clients match “{query}”.</p>}
+      </>}
+    </article>
+    {students.length > 0 && !selected && <p className="policy-note" data-no-selection>Select a client to view weekly nutrition activity.</p>}
+    {selected && selectedData && <div data-detail={selected.id}>
+      <section className="nutrition-grid">
+        <article className="metric gold nutrition-score" data-consistency><span>WEEKLY CONSISTENCY · {selected.name.toUpperCase()}</span><strong>{selectedData.consistency.percent === null ? dash : <>{selectedData.consistency.percent}<em>%</em></>}</strong><small>{selectedData.consistency.elapsedDays === 0 ? "Week has not started" : `${selectedData.consistency.loggedDays} of ${selectedData.consistency.elapsedDays} days logged`}</small></article>
+        <article className="surface nutrition-summary" data-insight={selectedData.insight.key}><div className="card-head"><div><span className="eyebrow">RULE-BASED INSIGHT · {selected.name.toUpperCase()}</span><h2>{selectedData.insight.title}</h2></div><Sparkles /></div><p>{selectedData.insight.text}</p></article>
+      </section>
+      <article className="surface meal-section" data-activity>
+        <div className="card-head"><div><span className="eyebrow">THIS WEEK</span><h2>Client food activity</h2></div><span className="chip">{selected.name}</span></div>
+        {weekEntryCount === 0 && <div className="empty-agenda"><Utensils /><strong>No food activity logged this week.</strong></div>}
+        {days.map((day) => {
+          const list = byDay.get(day.dateKey) ?? [];
+          return <div className="meal-day" key={day.dateKey} data-day={day.dateKey}>
+            <h3>{day.weekday} · {day.jalaliDay} {day.jalaliMonthName}</h3>
+            {list.length === 0 ? <small>Nothing logged</small> : <div className="meal-grid">{list.map((meal) => <div className="meal" key={meal.id} data-meal={meal.id}><span><Utensils /></span><div><small>{MEAL_LABELS[meal.mealType]} · {formatAppTime(meal.loggedAt)}</small><h3>{meal.description}</h3></div></div>)}</div>}
+          </div>;
+        })}
+      </article>
+    </div>}
   </>;
 }
 
@@ -1093,9 +1166,7 @@ export default function CoachApp({ onLogout, onUnauthorized }: { onLogout: () =>
     ? <Clients apiFetch={apiFetch} students={students} selected={selected} select={setSelectedId} add={openAddClient} log={() => openSession()} editSchedule={() => openScheduleEditor()} editProfile={openProfileEditor} noteHistory={noteHistory} noteHistoryLoading={noteHistoryLoading} noteHistoryError={noteHistoryError} retryNoteHistory={() => setNoteHistoryVersion((value) => value + 1)} muscle={muscle} setMuscle={setMuscle} bodyMap={bodyMap} onEditMuscles={openMuscleEditor} />
     : <><Heading eyebrow="CLIENT DIRECTORY" title="No members yet." sub="Add your first client to start scheduling sessions." action={<Button className="primary-action" onClick={openAddClient}><Plus /> Add client</Button>} /><article className="surface empty-members"><div className="empty-agenda"><UsersRound /><strong>No members yet.</strong><span>Clients you add will appear here.</span></div></article></>;
   else if (view === "calendar") content = <CalendarView students={students} apiFetch={apiFetch} version={calendarVersion} store={sessionsStore} onAttendance={beginAttendance} editSchedule={openScheduleEditor} />;
-  else if (view === "nutrition") content = selected
-    ? <Nutrition meals={initialMeals} students={students} selected={selected} select={setSelectedId} />
-    : <><Heading eyebrow="NUTRITION LOG" title="Your clients’ nutrition." sub="Every student’s weekly pattern and latest food entries in one view." /><article className="surface empty-members"><div className="empty-agenda"><Apple /><strong>No members yet.</strong><span>Nutrition appears once you have clients.</span></div></article></>;
+  else if (view === "nutrition") content = <Nutrition apiFetch={apiFetch} students={students} />;
   else if (view === "settings") content = <SettingsView absence={absence} setAbsence={setAbsence} />;
   else content = <CoachDashboard students={students} selected={selected} select={setSelectedId} apiFetch={apiFetch} version={calendarVersion} store={sessionsStore} onAttendance={beginAttendance} logSession={() => openSession()} addClient={openAddClient} openCalendar={() => setView("calendar")} muscle={muscle} setMuscle={setMuscle} bodyMap={bodyMap} />;
 

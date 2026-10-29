@@ -2,13 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  CalendarDays, CircleUserRound, Droplets, LayoutDashboard, LogOut,
+  CalendarDays, ChevronLeft, ChevronRight, CircleUserRound, Droplets, LayoutDashboard, LogOut, Utensils,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AuthUser } from "@/components/auth/login-form";
-import { formatAppTime, formatJalaliDate, getAppDateKey, localDateTimeToUtcIso } from "@/lib/date-time";
+import {
+  addDaysToDateKey, formatAppTime, formatJalaliDate, getAppDateKey, getAppWeek, localDateTimeToUtcIso,
+} from "@/lib/date-time";
 
-type View = "today" | "sessions" | "cycle" | "profile";
+type View = "today" | "sessions" | "cycle" | "meals" | "profile";
 
 /** Persisted profile. Shape matches `GET /api/members/me` exactly. */
 type MemberProfile = {
@@ -50,6 +52,18 @@ type CyclesState =
   | { status: "error" }
   | { status: "ready"; cycles: MemberCycle[] };
 
+/** Public meal record. Shape matches `GET /api/members/me/meals`. */
+type MealType = "breakfast" | "lunch" | "dinner" | "snack";
+type MemberMeal = {
+  id: number; mealType: MealType; loggedAt: string; description: string;
+  createdAt: string; updatedAt: string;
+};
+
+type MealsState =
+  | { status: "loading" }
+  | { status: "error" }
+  | { status: "ready"; meals: MemberMeal[] };
+
 const NOT_RECORDED = "Not recorded";
 
 /** Renders a persisted measurement, or the empty state when it is null. */
@@ -82,6 +96,7 @@ const memberNav = [
   ["today", "Today", LayoutDashboard],
   ["sessions", "Sessions", CalendarDays],
   ["cycle", "Cycle", Droplets],
+  ["meals", "Meal Log", Utensils],
   ["profile", "Profile", CircleUserRound],
 ] as const;
 
@@ -469,6 +484,303 @@ function ProfileView({ profile, email }: { profile: MemberProfile; email: string
   );
 }
 
+const MEAL_LABELS: Record<MealType, string> = { breakfast: "Breakfast", lunch: "Lunch", dinner: "Dinner", snack: "Snack" };
+const MEAL_TYPES = Object.keys(MEAL_LABELS) as MealType[];
+const MEAL_DESCRIPTION_MAX = 500;
+
+const EMPTY_MEAL_FORM = { mealType: "", dateKey: "", time: "", description: "" };
+
+/** The Tehran date and time a persisted instant falls on. Never browser-local. */
+const mealDateKey = (loggedAt: string) => getAppDateKey(new Date(loggedAt));
+
+/**
+ * The Member's own food log for one Saturday-Friday (Tehran) week. Owns its
+ * state and makes one range request per visible week, plus one refetch after
+ * each mutation (the server owns ordering and truth). The backend is
+ * authoritative; local checks only save an obvious round trip.
+ */
+function MealLogView({ apiFetch }: { apiFetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response> }) {
+  const [state, setState] = useState<MealsState>({ status: "loading" });
+  const [version, setVersion] = useState(0);
+  // Any Tehran date inside the visible week; prev/next move it by 7 days.
+  const [anchorKey, setAnchorKey] = useState(() => getAppDateKey());
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [rowMessage, setRowMessage] = useState<string | null>(null);
+  const [form, setForm] = useState(EMPTY_MEAL_FORM);
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [saved, setSaved] = useState<string | null>(null);
+
+  const week = getAppWeek(new Date(localDateTimeToUtcIso(anchorKey, "12:00")));
+  const from = week[0].dateKey;
+  const to = week[6].dateKey;
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      setState({ status: "loading" });
+      try {
+        const response = await apiFetch(`/api/members/me/meals?from=${from}&to=${to}`);
+        if (response.status === 401) return; // onUnauthorized already fired.
+        if (!response.ok) {
+          if (active) setState({ status: "error" });
+          return;
+        }
+        const payload = (await response.json()) as { meals?: unknown };
+        if (!active) return;
+        setState(Array.isArray(payload.meals)
+          ? { status: "ready", meals: payload.meals as MemberMeal[] }
+          : { status: "error" });
+      } catch {
+        if (active) setState({ status: "error" });
+      }
+    })();
+    return () => { active = false; };
+  }, [apiFetch, from, to, version]);
+
+  const today = getAppDateKey();
+  const set = (field: keyof typeof EMPTY_MEAL_FORM) =>
+    (event: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
+      setForm((current) => ({ ...current, [field]: event.target.value }));
+      setFormError(null);
+    };
+
+  function localError(): string | null {
+    const { mealType, dateKey, time, description } = form;
+    if (!MEAL_TYPES.includes(mealType as MealType)) return "Choose a meal type.";
+    if (!dateKey) return "Choose a date.";
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return "Enter a valid time.";
+    const trimmed = description.trim();
+    if (!trimmed) return "Describe what you ate.";
+    if (trimmed.length > MEAL_DESCRIPTION_MAX) return `Keep the description under ${MEAL_DESCRIPTION_MAX} characters.`;
+    try {
+      if (localDateTimeToUtcIso(dateKey, time) > new Date().toISOString()) return "A meal can't be logged in the future.";
+    } catch {
+      return "Enter a valid date and time.";
+    }
+    return null;
+  }
+
+  function closeForm() {
+    setAdding(false);
+    setEditingId(null);
+    setForm(EMPTY_MEAL_FORM);
+    setFormError(null);
+  }
+
+  function reset() {
+    closeForm();
+    setConfirmDeleteId(null);
+    setSaved(null);
+    setRowMessage(null);
+  }
+
+  function startAdd() {
+    reset();
+    setForm({ ...EMPTY_MEAL_FORM, dateKey: getAppDateKey(), time: formatAppTime(new Date()) });
+    setAdding(true);
+  }
+
+  function startEdit(meal: MemberMeal) {
+    reset();
+    setForm({
+      mealType: meal.mealType, dateKey: mealDateKey(meal.loggedAt),
+      time: formatAppTime(meal.loggedAt), description: meal.description,
+    });
+    setEditingId(meal.id);
+  }
+
+  function goToWeek(key: string) {
+    reset();
+    setAnchorKey(key);
+  }
+
+  async function confirmDelete(id: number) {
+    if (deleting) return;
+    setDeleting(true);
+    setRowMessage(null);
+    try {
+      const response = await apiFetch(`/api/members/me/meals/${id}`, { method: "DELETE" });
+      if (response.status === 401) return;
+      if (response.status === 204) {
+        setConfirmDeleteId(null);
+        setSaved("Meal deleted.");
+        setVersion((v) => v + 1);
+      } else if (response.status === 404) {
+        setConfirmDeleteId(null);
+        setRowMessage("This meal entry is no longer available.");
+        setVersion((v) => v + 1);
+      } else {
+        setRowMessage("Could not delete meal. Try again.");
+      }
+    } catch {
+      setRowMessage("Could not delete meal. Try again.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    if (submitting) return;
+    const invalid = localError();
+    if (invalid) { setFormError(invalid); return; }
+    setSubmitting(true);
+    setFormError(null);
+    const dateKey = form.dateKey;
+    try {
+      const response = await apiFetch(
+        editingId === null ? "/api/members/me/meals" : `/api/members/me/meals/${editingId}`,
+        {
+          method: editingId === null ? "POST" : "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            mealType: form.mealType, dateKey, time: form.time, description: form.description.trim(),
+          }),
+        }
+      );
+      if (response.status === 401) return;
+      if (response.status === (editingId === null ? 201 : 200)) {
+        const wasNew = editingId === null;
+        closeForm();
+        setSaved(wasNew ? "Meal logged." : "Changes saved.");
+        // A meal saved into another week moves the view to that week, so the
+        // result is always visible; otherwise refetch the current week.
+        if (dateKey < from || dateKey > to) setAnchorKey(dateKey);
+        else setVersion((v) => v + 1);
+        return;
+      }
+      if (response.status === 404 && editingId !== null) {
+        closeForm();
+        setRowMessage("This meal entry is no longer available.");
+        setVersion((v) => v + 1);
+        return;
+      }
+      if (response.status === 400) {
+        const body = (await response.json().catch(() => null)) as { error?: string } | null;
+        setFormError(body?.error ?? "Please check the details and try again.");
+      } else {
+        setFormError("Could not save meal. Try again.");
+      }
+    } catch {
+      setFormError("Could not save meal. Try again.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const formElement = (
+    <form noValidate className="surface dialog-form" aria-label={editingId === null ? "Log meal" : "Edit meal"}
+      style={{ padding: 20, marginBottom: editingId === null ? 14 : 0 }} onSubmit={(event) => void submit(event)}>
+      <strong>{editingId === null ? "Log a meal" : "Edit meal"}</strong>
+      <div className="form-grid">
+        <label>Meal type
+          <select value={form.mealType} onChange={set("mealType")}>
+            <option value="">Select…</option>
+            {MEAL_TYPES.map((type) => <option key={type} value={type}>{MEAL_LABELS[type]}</option>)}
+          </select>
+        </label>
+        <label>Date
+          <input type="date" max={today} value={form.dateKey} onChange={set("dateKey")} />
+        </label>
+        <label>Time
+          <input type="time" value={form.time} onChange={set("time")} />
+        </label>
+      </div>
+      <label>What did you eat?
+        <textarea value={form.description} onChange={set("description")} />
+        <small>{form.description.trim().length}/{MEAL_DESCRIPTION_MAX}</small>
+      </label>
+      {formError && <p className="policy-note" role="alert">{formError}</p>}
+      <div style={{ display: "flex", gap: 10 }}>
+        <Button type="submit" className="primary-action" disabled={submitting}>{submitting ? "Saving…" : editingId === null ? "Save" : "Save changes"}</Button>
+        <Button type="button" variant="outline" disabled={submitting} onClick={closeForm}>Cancel</Button>
+      </div>
+    </form>
+  );
+
+  const meals = state.status === "ready" ? state.meals : [];
+  const byDay = new Map<string, MemberMeal[]>();
+  for (const meal of meals) {
+    const key = mealDateKey(meal.loggedAt);
+    byDay.set(key, [...(byDay.get(key) ?? []), meal]);
+  }
+  for (const list of byDay.values()) list.sort((a, b) => a.loggedAt.localeCompare(b.loggedAt) || a.id - b.id);
+  const currentWeek = today >= from && today <= to;
+
+  return (
+    <>
+      <Heading eyebrow="FOOD LOG" title="Your meals." sub="Log what you eat so your coach can see your week." />
+      <div className="meal-week-nav" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+        <Button type="button" variant="outline" aria-label="Previous week" onClick={() => goToWeek(addDaysToDateKey(anchorKey, -7))}><ChevronLeft /></Button>
+        <strong data-testid="meal-week-range">{week[0].jalaliDay} {week[0].jalaliMonthName} – {week[6].jalaliDay} {week[6].jalaliMonthName}</strong>
+        <Button type="button" variant="outline" aria-label="Next week" onClick={() => goToWeek(addDaysToDateKey(anchorKey, 7))}><ChevronRight /></Button>
+        {!currentWeek && <button type="button" className="text-link" onClick={() => goToWeek(today)}>Current week</button>}
+      </div>
+      {saved && <p className="policy-note" role="status">{saved}</p>}
+      {rowMessage && <p className="policy-note" role="alert">{rowMessage}</p>}
+      {adding ? formElement : (
+        <div style={{ marginBottom: 14 }}>
+          <Button className="primary-action" onClick={startAdd}>Log meal</Button>
+        </div>
+      )}
+      {state.status === "loading" ? (
+        <p className="policy-note">Loading meals…</p>
+      ) : state.status === "error" ? (
+        <p className="policy-note" role="alert">
+          Could not load your meals. <button type="button" className="text-link" onClick={() => setVersion((v) => v + 1)}>Retry</button>
+        </p>
+      ) : (
+        <>
+          {meals.length === 0 && (
+            <div className="empty-agenda">
+              <Utensils />
+              <strong>No meals logged this week.</strong>
+            </div>
+          )}
+          <article className="surface" style={{ padding: 0 }}>
+            {week.map((day) => (
+              <div className="session-note" key={day.dateKey} data-day={day.dateKey} style={{ gridTemplateColumns: "120px 1fr", alignItems: "start" }}>
+                <time>{day.weekday}<br /><small>{day.jalaliDay} {day.jalaliMonthName}</small></time>
+                <div>
+                  {(byDay.get(day.dateKey) ?? []).length === 0 ? (
+                    <small>Nothing logged</small>
+                  ) : (byDay.get(day.dateKey) ?? []).map((meal) => editingId === meal.id ? (
+                    <div key={meal.id}>{formElement}</div>
+                  ) : (
+                    <div key={meal.id} data-meal={meal.id} style={{ marginBottom: 10 }}>
+                      <strong>{MEAL_LABELS[meal.mealType]} · {formatAppTime(meal.loggedAt)}</strong>
+                      <p>{meal.description}</p>
+                      {confirmDeleteId === meal.id ? (
+                        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                          <strong>Delete this meal entry?</strong>
+                          <small>This cannot be undone.</small>
+                          <button type="button" className="text-link" disabled={deleting} onClick={() => setConfirmDeleteId(null)}>Cancel</button>
+                          <button type="button" className="text-link" style={{ color: "var(--destructive)" }} disabled={deleting}
+                            onClick={() => void confirmDelete(meal.id)}>{deleting ? "Deleting…" : "Delete"}</button>
+                        </div>
+                      ) : (
+                        <div style={{ display: "flex", gap: 14 }}>
+                          <button type="button" className="text-link" onClick={() => startEdit(meal)}>Edit</button>
+                          <button type="button" className="text-link" style={{ color: "var(--destructive)" }}
+                            onClick={() => { reset(); setConfirmDeleteId(meal.id); }}>Delete</button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </article>
+        </>
+      )}
+    </>
+  );
+}
+
 export default function MemberApp({
   user, onLogout, onUnauthorized,
 }: { user: AuthUser; onLogout: () => void; onUnauthorized: () => void }) {
@@ -580,6 +892,8 @@ export default function MemberApp({
     content = <SessionsView sessionsState={sessionsState} retry={() => setSessionsVersion((v) => v + 1)} />;
   } else if (view === "cycle") {
     content = <CycleView apiFetch={apiFetch} />;
+  } else if (view === "meals") {
+    content = <MealLogView apiFetch={apiFetch} />;
   } else if (view === "profile") {
     content = <ProfileView profile={profile} email={user.email} />;
   } else {

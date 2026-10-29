@@ -22,8 +22,12 @@
     "test:session-reassignment": "node scripts/test-session-reassignment.mjs",
     "test:session-dates": "node scripts/test-session-dates.mjs",
     "test:session-muscles": "node scripts/test-session-muscles.mjs",
-    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:session-reassignment && npm run test:session-dates && npm run test:session-muscles && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar",
-    "test:full": "npm run test:regression && npm run test:admin-ui && npm run test:coach-calendar-ui"
+    "test:nutrition": "node scripts/test-nutrition.mjs",
+    "test:member-meals-ui": "node scripts/test-member-meals-ui.mjs",
+    "test:nutrition-rules": "node scripts/test-nutrition-rules.mjs",
+    "test:coach-nutrition-ui": "node scripts/test-coach-nutrition-ui.mjs",
+    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:session-reassignment && npm run test:session-dates && npm run test:session-muscles && npm run test:nutrition && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar && npm run test:nutrition-rules",
+    "test:full": "npm run test:regression && npm run test:admin-ui && npm run test:coach-calendar-ui && npm run test:member-meals-ui && npm run test:coach-nutrition-ui"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

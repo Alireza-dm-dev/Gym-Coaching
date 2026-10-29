@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   AnySQLiteColumn,
+  check,
   index,
   integer,
   real,
@@ -225,4 +226,42 @@ export const memberCycles = sqliteTable(
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
   (table) => [unique("member_cycles_member_id_period_start_unique").on(table.memberId, table.periodStart)]
+);
+
+/** Canonical meal types. The single source for the API, TypeScript and the DB CHECK. */
+export const mealTypes = ["breakfast", "lunch", "dinner", "snack"] as const;
+
+export type MealType = (typeof mealTypes)[number];
+
+/**
+ * A Member's own food log entry: what they ate (free-text `description`, no
+ * calories/macros) and when. Belongs to the Member, not to a Coach, so there
+ * is deliberately no `coachId`: Coach visibility is derived from the Member's
+ * CURRENT `members.coachId` and follows reassignment. `loggedAt` is a UTC ISO
+ * instant; Tehran day/week grouping is derived at read time. Not subject to
+ * the Session-detail retention. The (member_id, logged_at) index serves both
+ * the Member range read and the Coach range read (after scoping through
+ * `members`). Hard-deleted by the Member; Member FK follows the existing
+ * Member-owned convention (no cascade; Members are never hard-deleted).
+ */
+export const memberMeals = sqliteTable(
+  "member_meals",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    memberId: integer("member_id")
+      .notNull()
+      .references(() => members.id),
+    loggedAt: text("logged_at").notNull(),
+    mealType: text("meal_type", { enum: mealTypes }).notNull(),
+    description: text("description").notNull(),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  },
+  (table) => [
+    index("member_meals_member_id_logged_at_idx").on(table.memberId, table.loggedAt),
+    check(
+      "member_meals_meal_type_check",
+      sql`${table.mealType} IN ('breakfast', 'lunch', 'dinner', 'snack')`
+    ),
+  ]
 );
