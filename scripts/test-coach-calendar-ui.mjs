@@ -742,6 +742,74 @@ describe("Coach Calendar UI (real browser)", () => {
     assert.deepEqual((await musclesFromApi(ids.MuA, TODAY))[0].muscles, ["chest", "glutes"]); // nothing changed
   });
 
+  it("Clients: search filters the roster client-side (case-insensitive, trimmed, no request), with its own empty state; no fake balance", async () => {
+    await page.reload(); await todayLoaded();
+    await sidebar("Clients");
+    const rows = page.locator(".directory > div > button");
+    await rows.first().waitFor();
+    const all = await rows.count();
+    assert.ok(all >= 2, "several Members visible");
+    const search = page.getByRole("searchbox", { name: "Search clients" });
+    const mark = net.length;
+    await search.fill("  mua ");
+    await page.waitForFunction(() => document.querySelectorAll(".directory > div > button").length === 1);
+    assert.equal(await rows.first().locator("strong").innerText(), `${PREFIX} MuA`);
+    await search.fill("MUB");
+    await page.waitForFunction(() => document.querySelectorAll(".directory > div > button").length === 1);
+    assert.equal(await rows.first().locator("strong").innerText(), `${PREFIX} MuB`);
+    await search.fill("no-such-client-zzz");
+    await page.getByText("No clients match your search.").waitFor();
+    assert.equal(await rows.count(), 0);
+    assert.equal(await page.getByText("No members yet.").count(), 0);
+    await search.fill("");
+    await page.waitForFunction((n) => document.querySelectorAll(".directory > div > button").length === n, all);
+    assert.equal(await page.getByText("No clients match your search.").count(), 0);
+    assert.equal(apiSince(mark).length, 0, "searching makes no API request");
+    // the selected Client's profile is untouched by filtering
+    const detail = await page.locator(".profile-card h2").innerText();
+    await search.fill("no-such-client-zzz");
+    assert.equal(await page.locator(".profile-card h2").innerText(), detail);
+    await search.fill("");
+    // no fake package balance anywhere on the Clients view
+    const text = await page.locator("main.content").innerText();
+    for (const mock of ["sessions left", "\nleft"]) assert.ok(!text.toLowerCase().includes(mock), `unexpected "${mock}"`);
+    assert.equal(await page.locator(".directory b").count(), 0);
+  });
+
+  it("Calendar: no Schedule button; the real Edit schedule dialog still opens (from the row and from the profile) without writing", async () => {
+    await openCalendar();
+    assert.equal(await page.locator(".page-heading").getByRole("button", { name: /^schedule$/i }).count(), 0);
+    assert.equal(await page.getByText("schedule a client").count(), 0);
+    const mark = net.length;
+    await page.locator(".agenda-row").first().getByRole("button", { name: /schedule/i }).click();
+    await page.getByRole("dialog").getByText("Edit training schedule").waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    await sidebar("Clients");
+    await page.getByRole("button", { name: "Edit schedule" }).click();
+    await page.getByRole("dialog").getByText("Edit training schedule").waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "detached" });
+    assert.equal(apiSince(mark).filter((r) => r.method !== "GET").length, 0);
+  });
+
+  it("Settings: no fake absence/reminder/plan controls; Profile and Body Map cards remain", async () => {
+    await sidebar("Settings");
+    await page.getByText("How the body map is coloured").waitFor();
+    await page.locator('article[aria-label="Your profile"]').waitFor();
+    const text = await page.locator("main.content").innerText();
+    for (const gone of ["Absence handling", "Count absence as a used session", "Session nudges", "24 hours before each session", "when a plan has two sessions remaining"]) {
+      assert.ok(!text.includes(gone), `unexpected "${gone}"`);
+    }
+    assert.equal(await page.locator("main.content [role=switch]").count(), 0);
+  });
+
+  it("Topbar: no inert Notifications control; the real profile avatar remains", async () => {
+    assert.equal(await page.getByRole("button", { name: "Notifications" }).count(), 0);
+    assert.equal(await page.locator("header.topbar .top-actions button i").count(), 0);
+    assert.equal(await page.locator("header.topbar").getByRole("button", { name: "Open your profile photo" }).count(), 1);
+  });
+
   it("a Coach with ZERO Members keeps the full shell with proper empty states", async () => {
     const sa = await apiCookie(SA, FIXTURES[SA]);
     const created = await api(sa, "POST", "/api/admin/coaches", { name: `${PREFIX} Coach B`, email: COACH_B, password: COACH_B_PASSWORD });
@@ -768,7 +836,7 @@ describe("Coach Calendar UI (real browser)", () => {
     await sidebar("Nutrition");
     await page.getByText("No members yet.").first().waitFor();
     await sidebar("Settings");
-    await page.getByText("Absence handling").waitFor();
+    await page.getByText("How the body map is coloured").waitFor();
     assert.equal(await page.locator("aside.sidebar nav").isVisible(), true);
   });
 
