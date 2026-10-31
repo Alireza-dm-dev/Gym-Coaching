@@ -12,6 +12,7 @@
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
+    "bootstrap:production-admin": "node --experimental-strip-types scripts/bootstrap-production-admin.ts",
     "test:cycles": "node scripts/test-cycles.mjs",
     "test:admin": "node scripts/test-admin.mjs",
     "test:admin-members": "node scripts/test-admin-members.mjs",
@@ -29,7 +30,8 @@
     "test:coach-profile-ui": "node scripts/test-coach-profile-ui.mjs",
     "test:member-profile-ui": "node scripts/test-member-profile-ui.mjs",
     "test:profile-identity": "node scripts/test-profile-identity.mjs",
-    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:profile-identity && npm run test:session-reassignment && npm run test:session-dates && npm run test:session-muscles && npm run test:nutrition && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar && npm run test:nutrition-rules",
+    "test:production-admin-bootstrap": "node --experimental-strip-types scripts/test-production-admin-bootstrap.mjs",
+    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:profile-identity && npm run test:session-reassignment && npm run test:session-dates && npm run test:session-muscles && npm run test:nutrition && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar && npm run test:nutrition-rules && npm run test:production-admin-bootstrap",
     "test:full": "npm run test:regression && npm run test:admin-ui && npm run test:coach-calendar-ui && npm run test:member-meals-ui && npm run test:coach-nutrition-ui && npm run test:coach-profile-ui && npm run test:member-profile-ui"
   },
   "dependencies": {

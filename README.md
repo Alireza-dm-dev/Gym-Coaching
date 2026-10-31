@@ -108,6 +108,42 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 Replace the filename with the pending migration and `DB` with your D1 binding name if different. Use `.wrangler/state`, not `.wrangler/state/v3`; Wrangler adds the versioned directories. Do not replay migrations already applied locally. This updates only the preview database; publishing applies production migrations separately.
 
+## First production Super Admin bootstrap
+
+The app has no public registration, so a new production database has no way in until its first Super Admin exists. `scripts/bootstrap-production-admin.ts` creates exactly that one `users` row (`role = super_admin`, active) and nothing else: no Coach/Member rows, no migrations, no updates. After that, create every other account through the Admin UI.
+
+It is operator-run only. No build, start, test or publish step invokes it, and there is no HTTP endpoint for it. It is unrelated to `scripts/seed-local-auth.ts`, which stays local-only; never use the local seeds or fixture accounts (`*@example.test`) in production.
+
+Prerequisites:
+
+- Migrations `0000`–`0010` are already applied to the production database (the script refuses with "Production schema is not ready" if `users` is missing, and never runs migrations itself).
+- Wrangler is authenticated for the production Cloudflare account (`wrangler login` or `CLOUDFLARE_API_TOKEN`).
+- You know the real production D1 database name. There is no default; the script never targets local or preview databases.
+
+Environment (the password is never accepted as an argument):
+
+| Variable | Meaning |
+|---|---|
+| `GYM_BOOTSTRAP_ADMIN_EMAIL` | Real admin email. Trimmed and lowercased; `*.test` fixture domains are refused. |
+| `GYM_BOOTSTRAP_ADMIN_PASSWORD` | At least 10 characters (same rule as the Admin UI). Hashed with the app's PBKDF2-SHA256 helper. |
+| `GYM_BOOTSTRAP_D1_DATABASE` | Real production D1 database name. |
+
+Preview first. A dry run checks inputs, Wrangler auth, the schema and that no Super Admin exists, then writes nothing:
+
+```sh
+npm run bootstrap:production-admin -- --dry-run
+```
+
+Then create the admin. `--confirm-production` is required for a real run:
+
+```sh
+npm run bootstrap:production-admin -- --confirm-production
+```
+
+Set the three variables in the shell for that command only (for example by prompting with `read -s`) rather than writing the password to a file or shell history. The script prints only the target database, the email, and a success message; it never prints the password or hash. If any Super Admin already exists, or the email is already used, it exits non-zero with "A Super Admin already exists. Bootstrap refused." and changes nothing, so a second run is always safe. A failed insert is reported once and is not retried.
+
+Deployment note: passwords use PBKDF2 with 600,000 iterations. This works in local Miniflare, but the production Workers runtime has not been verified, so confirm the first production login works before relying on it.
+
 ## Diagnostic Commands
 
 - `npm run install:ci`: perform the one locked dependency install
