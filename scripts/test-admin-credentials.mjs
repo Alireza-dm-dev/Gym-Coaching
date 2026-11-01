@@ -131,6 +131,7 @@ describe("Admin credential-update regression", () => {
     assert.equal(created.status, 201);
     tUserId = created.json.coach.userId;
     tCoachId = created.json.coach.id;
+    assert.ok(one(`SELECT password_hash FROM users WHERE id = ${tUserId}`).password_hash.startsWith("pbkdf2-sha256$v=1$i=100000$")); // new Coach credential
   });
 
   it("unauthenticated 401, Coach 403, Member 403; no mutation", async () => {
@@ -191,7 +192,7 @@ describe("Admin credential-update regression", () => {
 
     const after = userRow(m1UserId);
     assert.notEqual(after.password_hash, before.password_hash);
-    assert.ok(after.password_hash.startsWith("pbkdf2-sha256$") && !after.password_hash.includes(NEW_MEMBER_PASSWORD));
+    assert.ok(after.password_hash.startsWith("pbkdf2-sha256$v=1$i=100000$") && !after.password_hash.includes(NEW_MEMBER_PASSWORD));
     assert.equal(after.email, before.email);
     assert.equal(after.is_active, 1);
     assert.deepEqual(sql("SELECT id, user_id, coach_id FROM members ORDER BY id"), linkBefore);
@@ -294,6 +295,7 @@ describe("Admin credential-update regression", () => {
     const after = userRow(tUserId);
     assert.equal(after.role, "coach");
     assert.notEqual(after.password_hash, hashBefore);
+    assert.ok(after.password_hash.startsWith("pbkdf2-sha256$v=1$i=100000$"));
     assert.deepEqual(sql("SELECT id, user_id, name FROM coaches ORDER BY id"), profilesBefore);
     assert.deepEqual(sql("SELECT id, user_id, coach_id FROM members ORDER BY id"), membersBefore);
     const listed = (await call(SA(), "GET", "/api/admin/coaches")).json.coaches.find((c) => c.id === tCoachId);

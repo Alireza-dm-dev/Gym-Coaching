@@ -7,7 +7,9 @@
 
 const PBKDF2_ALGORITHM_TAG = "pbkdf2-sha256";
 const PBKDF2_VERSION = 1;
-export const PBKDF2_ITERATIONS = 600_000;
+// Cloudflare Workers production currently limits PBKDF2 to 100,000 iterations; do not raise this
+// above that. Each stored hash records its own count, so verification never depends on this value.
+export const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_SALT_BYTES = 16;
 const PBKDF2_HASH_BYTES = 32;
 const MAX_ITERATIONS = 10_000_000;

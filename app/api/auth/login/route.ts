@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 // Valid PBKDF2 hash of a random throwaway value; belongs to no account. Used
 // so unknown/passwordless/inactive logins still pay for a PBKDF2 verify.
 const DUMMY_PASSWORD_HASH =
-  "pbkdf2-sha256$v=1$i=600000$salt=4AjYJwuQNMx9j3ktUUSW_w$hash=zXOpV4swH8iWg8uqcfiCIP7EewGlg8C4zq7xoYBh1n0";
+  "pbkdf2-sha256$v=1$i=100000$salt=e71UGL7B46w1pinZTUTsIQ$hash=cW5ffZfRa57m2sHZtgjcpXLegdb_kE13a08e_dyl4a4";
 
 const badRequest = (error: string) => Response.json({ error }, { status: 400 });
 const invalidCredentials = () =>

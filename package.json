@@ -30,8 +30,9 @@
     "test:coach-profile-ui": "node scripts/test-coach-profile-ui.mjs",
     "test:member-profile-ui": "node scripts/test-member-profile-ui.mjs",
     "test:profile-identity": "node scripts/test-profile-identity.mjs",
+    "test:auth-crypto": "node --experimental-strip-types scripts/test-auth-crypto.mjs",
     "test:production-admin-bootstrap": "node --experimental-strip-types scripts/test-production-admin-bootstrap.mjs",
-    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:profile-identity && npm run test:session-reassignment && npm run test:session-dates && npm run test:session-muscles && npm run test:nutrition && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar && npm run test:nutrition-rules && npm run test:production-admin-bootstrap",
+    "test:regression": "npm run test:cycles && npm run test:admin && npm run test:profile-identity && npm run test:session-reassignment && npm run test:session-dates && npm run test:session-muscles && npm run test:nutrition && npm run test:admin-members && npm run test:admin-credentials && npm run test:coach-calendar && npm run test:nutrition-rules && npm run test:production-admin-bootstrap && npm run test:auth-crypto",
     "test:full": "npm run test:regression && npm run test:admin-ui && npm run test:coach-calendar-ui && npm run test:member-meals-ui && npm run test:coach-nutrition-ui && npm run test:coach-profile-ui && npm run test:member-profile-ui"
   },
   "dependencies": {

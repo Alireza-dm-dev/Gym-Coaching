@@ -220,7 +220,7 @@ describe("Admin Member management regression", () => {
 
     const user = one(`SELECT id, role, email, password_hash, is_active FROM users WHERE email = '${P_EMAIL}'`);
     assert.deepEqual({ id: user.id, role: user.role, is_active: user.is_active }, { id: pUserId, role: "member", is_active: 1 });
-    assert.ok(user.password_hash.startsWith("pbkdf2-sha256$") && !user.password_hash.includes(P_PASSWORD));
+    assert.ok(user.password_hash.startsWith("pbkdf2-sha256$v=1$i=100000$") && !user.password_hash.includes(P_PASSWORD));
     assert.equal(count("members"), membersBefore);
     assert.equal(count("members", `id = ${pId} AND user_id = ${pUserId}`), 1);
     const row = await byId(pId);

@@ -199,7 +199,7 @@ describe("bootstrap-production-admin", { concurrency: false }, () => {
     });
     it("stores a hash the app's own verifyPassword accepts (and rejects a wrong password)", async () => {
       const [{ password_hash: hash }] = q(state, "SELECT password_hash FROM users");
-      assert.match(hash, /^pbkdf2-sha256\$v=1\$i=600000\$/);
+      assert.match(hash, /^pbkdf2-sha256\$v=1\$i=100000\$/);
       assert.equal(await verifyPassword(PASSWORD, hash), true);
       assert.equal(await verifyPassword(`${PASSWORD}x`, hash), false);
     });

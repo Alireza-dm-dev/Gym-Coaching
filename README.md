@@ -142,7 +142,7 @@ npm run bootstrap:production-admin -- --confirm-production
 
 Set the three variables in the shell for that command only (for example by prompting with `read -s`) rather than writing the password to a file or shell history. The script prints only the target database, the email, and a success message; it never prints the password or hash. If any Super Admin already exists, or the email is already used, it exits non-zero with "A Super Admin already exists. Bootstrap refused." and changes nothing, so a second run is always safe. A failed insert is reported once and is not retried.
 
-Deployment note: passwords use PBKDF2 with 600,000 iterations. This works in local Miniflare, but the production Workers runtime has not been verified, so confirm the first production login works before relying on it.
+Deployment note: passwords use PBKDF2-SHA256 with 100,000 iterations (`PBKDF2_ITERATIONS` in `lib/auth-crypto.ts`), the maximum Cloudflare Workers production currently accepts. Each hash stores its own iteration count. Post-MVP: evaluate a stronger Workers-compatible password KDF or platform capability. Confirm the first production login works after deployment.
 
 ## Diagnostic Commands
 
