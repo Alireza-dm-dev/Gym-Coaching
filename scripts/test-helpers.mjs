@@ -178,12 +178,12 @@ function groupAlive(pid) {
  * readiness probe is read-only: an unauthenticated-token lookup through
  * `/api/auth/me`, which exercises routing and D1 and answers 401.
  */
-export async function startWorker(port, { readyTimeoutMs = 20_000, config = "dist/server/wrangler.json" } = {}) {
+export async function startWorker(port, { readyTimeoutMs = 20_000, config = "dist/server/wrangler.json", persistTo = ".wrangler/state" } = {}) {
   const base = `http://127.0.0.1:${port}`;
   const logPath = join(tmpdir(), `gym-test-worker-${port}-${process.pid}.log`);
   const fd = openSync(logPath, "w");
   const child = spawn(process.execPath, [...WRANGLER, "dev", "--config", config, "--local",
-    "--persist-to", ".wrangler/state", "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0"],
+    "--persist-to", persistTo, "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", "0"],
     { stdio: ["ignore", fd, fd], detached: true });
   closeSync(fd);
   let exited = false;

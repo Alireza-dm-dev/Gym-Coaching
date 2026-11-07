@@ -144,6 +144,22 @@ Set the three variables in the shell for that command only (for example by promp
 
 Deployment note: passwords use PBKDF2-SHA256 with 100,000 iterations (`PBKDF2_ITERATIONS` in `lib/auth-crypto.ts`), the maximum Cloudflare Workers production currently accepts. Each hash stores its own iteration count. Post-MVP: evaluate a stronger Workers-compatible password KDF or platform capability. Confirm the first production login works after deployment.
 
+### Temporary HTTP bootstrap (Sites-managed D1 only)
+
+`POST /api/bootstrap/first-admin` exists only because the Sites-managed D1 cannot be reached by the CLI above. It is **temporary release infrastructure, not a permanent API**: remove it as soon as the first Super Admin exists.
+
+It has no authentication of its own, so **the Site must stay owner-only/private for as long as it is deployed**. Its protection in code is one-time and database-side: it accepts only `application/json` with `{ "email", "password" }`, refuses with `409` once any `super_admin` exists (it never updates or resets an account), rejects `*.test` emails and passwords under 10 characters, hashes with the shared `hashPassword`, and inserts one `users` row with a single guarded statement. It creates no Coach/Member, session or login, and returns only `{ created, email, role }`.
+
+Runbook (hard release requirement; the endpoint is safe to expose only while Site access stays **owner-only / private**):
+
+1. Keep the Site owner-only / private.
+2. Deploy with the temporary route.
+3. Call it exactly once with the real owner email and password (for example `curl` with a JSON body from a prompt, not from shell history).
+4. Verify the normal Super Admin login works.
+5. Immediately remove the temporary pieces: `app/api/bootstrap/first-admin/route.ts`, `scripts/test-first-admin-bootstrap-route.mjs`, the `test:first-admin-route` script and its entry in `test:regression` in `package.json`, and this README subsection. Keep `scripts/bootstrap-production-admin.ts`; it is permanent operator tooling.
+6. Deploy the removal.
+7. Only then consider changing Site access.
+
 ## Diagnostic Commands
 
 - `npm run install:ci`: perform the one locked dependency install

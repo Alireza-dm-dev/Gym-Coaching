@@ -283,11 +283,14 @@ describe("bootstrap-production-admin", { concurrency: false }, () => {
       assert.equal(occurrences(scripts["test:full"]), 0);
       assert.ok(scripts["test:full"].startsWith("npm run test:regression"));
     });
-    it("adds no bootstrap route under app/api", () => {
+    it("adds no bootstrap route under app/api other than the one temporary first-admin route (SEC0M9A)", () => {
+      const TEMPORARY = "app/api/bootstrap/first-admin/route.ts"; // remove it, and this exception, after the first production admin exists
       const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
       const routes = walk("app/api");
       assert.ok(routes.length > 0);
-      assert.deepEqual(routes.filter((f) => /bootstrap/i.test(f) || /bootstrap/i.test(readFileSync(f, "utf8"))), []);
+      assert.deepEqual(routes.filter((f) => f !== TEMPORARY && (/bootstrap/i.test(f) || /bootstrap/i.test(readFileSync(f, "utf8")))), []);
+      // The temporary route never invokes or imports the operator CLI.
+      if (routes.includes(TEMPORARY)) assert.ok(!/^\s*import .*(bootstrap-production-admin|child_process)/m.test(readFileSync(TEMPORARY, "utf8")));
     });
     it("seed-local-auth.ts stays local-only and separate", () => {
       const source = readFileSync(SCRIPT, "utf8");
